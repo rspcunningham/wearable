@@ -63,7 +63,7 @@ class ServerClient {
             return .failure(message)
         }
 
-        var request = URLRequest(url: config.baseURL.appending(path: "health/batch"))
+        var request = URLRequest(url: config.baseURL.appending(path: "ingest"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(config.apiKey, forHTTPHeaderField: "X-API-Key")
