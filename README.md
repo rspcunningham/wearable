@@ -100,14 +100,14 @@ HEALTH_API_KEY = replace-me
 Run from the repo root:
 
 ```bash
-cd /Users/robin/Desktop/aperture
+cd /Users/robin/Desktop/wearable
 xcodegen generate --spec ios/project.yml
 ```
 
 Or from inside `ios/`:
 
 ```bash
-cd /Users/robin/Desktop/aperture/ios
+cd /Users/robin/Desktop/wearable/ios
 xcodegen generate --spec project.yml
 ```
 
@@ -167,13 +167,15 @@ Core files:
 ### Backend Setup
 
 ```bash
-cd /Users/robin/Desktop/aperture/backend
+cd /Users/robin/Desktop/wearable/backend
 uv sync
 export HEALTH_API_KEY="replace-me"
 uv run uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
 For real device use, put the backend behind HTTPS. iOS HealthKit sync should not rely on plain HTTP.
+
+For Railway deployments, set the service healthcheck path to `/health`.
 
 ### Backend Verification
 
@@ -186,15 +188,17 @@ python3 -m py_compile backend/main.py
 Health check:
 
 ```bash
-curl http://127.0.0.1:8000/ping
+curl http://127.0.0.1:8000/health
 ```
 
-Authenticated summary:
+Authenticated ingest:
 
 ```bash
 curl \
   -H "X-API-Key: $HEALTH_API_KEY" \
-  http://127.0.0.1:8000/health/summary
+  -H "Content-Type: application/json" \
+  -d '{"records":[],"workouts":[],"activity_summaries":[],"profile_snapshots":[],"electrocardiograms":[],"workout_routes":[],"heartbeat_series":[],"audiograms":[],"state_of_mind":[],"correlations":[]}' \
+  http://127.0.0.1:8000/ingest
 ```
 
 ## API Surface
