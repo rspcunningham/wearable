@@ -1,0 +1,45 @@
+name: HealthSync
+
+options:
+  minimumXcodeGenVersion: 2.45.3
+  deploymentTarget:
+    iOS: "18.0"
+  createIntermediateGroups: true
+
+configs:
+  Debug: debug
+  Release: release
+
+settings:
+  base:
+    CURRENT_PROJECT_VERSION: 1
+    MARKETING_VERSION: 0.1.0
+    SWIFT_VERSION: 5.0
+    CODE_SIGN_STYLE: Automatic
+    TARGETED_DEVICE_FAMILY: 1
+    SUPPORTS_MACCATALYST: NO
+
+targets:
+  HealthSync:
+    type: application
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: .
+        includes:
+          - AppConfig.swift
+          - HealthSyncApp.swift
+          - HealthKitManager.swift
+          - PendingUploadQueue.swift
+          - ServerClient.swift
+    configFiles:
+      Debug: Config/Debug.xcconfig
+      Release: Config/Release.xcconfig
+    settings:
+      base:
+        PRODUCT_NAME: HealthSync
+        PRODUCT_BUNDLE_IDENTIFIER: $(PRODUCT_BUNDLE_IDENTIFIER)
+        INFOPLIST_FILE: HealthSync/Info.plist
+        CODE_SIGN_ENTITLEMENTS: HealthSync/HealthSync.entitlements
+        GENERATE_INFOPLIST_FILE: NO
+        DEVELOPMENT_ASSET_PATHS: ""
