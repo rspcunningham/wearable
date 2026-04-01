@@ -7,22 +7,22 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		099320EA3B24F575030D8A4D /* ServerClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = "TEMP_7921DB7C-4227-4C62-8D89-36D1B35092B8" /* ServerClient.swift */; };
-		46D4E37614EE5A7844051157 /* HealthKitManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = "TEMP_A0AA91D3-8B04-4CA6-AF18-12EBDBD2A5AD" /* HealthKitManager.swift */; };
-		6261E1CAC4F07C17D6EAC100 /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = "TEMP_8E56A55A-8F81-476A-AF18-4BC8AAFD1530" /* AppConfig.swift */; };
-		7938A8DFD4FBF8966F815BC3 /* HealthSyncApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = "TEMP_6ED24061-175E-461E-8FD9-E88BB5C0E758" /* HealthSyncApp.swift */; };
-		FFCA867FBC87B478BAE99710 /* PendingUploadQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = "TEMP_4F964316-CB32-4A4E-9348-70CA49DFD9D2" /* PendingUploadQueue.swift */; };
+		1FE4109DF08966BEAC66521E /* HealthKitManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = "TEMP_02F36C5B-FC59-45E8-8A6D-83CDE145317D" /* HealthKitManager.swift */; };
+		292C3505613145D25B50D8BE /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = "TEMP_4D30B1DC-1B22-47D8-8880-4D08A4D4D197" /* AppConfig.swift */; };
+		55B4A6BF262682A8151CB0E8 /* ServerClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = "TEMP_7605DC1D-B718-4892-99A7-71777D565F9B" /* ServerClient.swift */; };
+		C06ABD399572C6E902FCB189 /* PendingUploadQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = "TEMP_DCC25E41-44B9-440B-B9E0-131DD956336E" /* PendingUploadQueue.swift */; };
+		E416D9023F93CB2E6090E836 /* HealthSyncApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = "TEMP_CFC34D1B-0E54-4E14-9DA8-06011C472D1C" /* HealthSyncApp.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		1D343810F4B4383E36DAE2F1 /* HealthSync.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = HealthSync.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		3E527C53771A23331E32D5AC /* Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Debug.xcconfig; sourceTree = "<group>"; };
 		F040879BF50CADE1FE9031E9 /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
-		"TEMP_4F964316-CB32-4A4E-9348-70CA49DFD9D2" /* PendingUploadQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PendingUploadQueue.swift; sourceTree = "<group>"; };
-		"TEMP_6ED24061-175E-461E-8FD9-E88BB5C0E758" /* HealthSyncApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthSyncApp.swift; sourceTree = "<group>"; };
-		"TEMP_7921DB7C-4227-4C62-8D89-36D1B35092B8" /* ServerClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerClient.swift; sourceTree = "<group>"; };
-		"TEMP_8E56A55A-8F81-476A-AF18-4BC8AAFD1530" /* AppConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfig.swift; sourceTree = "<group>"; };
-		"TEMP_A0AA91D3-8B04-4CA6-AF18-12EBDBD2A5AD" /* HealthKitManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthKitManager.swift; sourceTree = "<group>"; };
+		"TEMP_02F36C5B-FC59-45E8-8A6D-83CDE145317D" /* HealthKitManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthKitManager.swift; sourceTree = "<group>"; };
+		"TEMP_4D30B1DC-1B22-47D8-8880-4D08A4D4D197" /* AppConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfig.swift; sourceTree = "<group>"; };
+		"TEMP_7605DC1D-B718-4892-99A7-71777D565F9B" /* ServerClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerClient.swift; sourceTree = "<group>"; };
+		"TEMP_CFC34D1B-0E54-4E14-9DA8-06011C472D1C" /* HealthSyncApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthSyncApp.swift; sourceTree = "<group>"; };
+		"TEMP_DCC25E41-44B9-440B-B9E0-131DD956336E" /* PendingUploadQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PendingUploadQueue.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -51,14 +51,14 @@
 			path = Config;
 			sourceTree = "<group>";
 		};
-		"TEMP_9A3E81F7-E7E0-4994-8B20-EA5D7049F594" /* . */ = {
+		"TEMP_6BE36E0D-B898-43CE-8915-982B55281736" /* . */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_6ED24061-175E-461E-8FD9-E88BB5C0E758" /* HealthSyncApp.swift */,
-				"TEMP_7921DB7C-4227-4C62-8D89-36D1B35092B8" /* ServerClient.swift */,
-				"TEMP_4F964316-CB32-4A4E-9348-70CA49DFD9D2" /* PendingUploadQueue.swift */,
-				"TEMP_A0AA91D3-8B04-4CA6-AF18-12EBDBD2A5AD" /* HealthKitManager.swift */,
-				"TEMP_8E56A55A-8F81-476A-AF18-4BC8AAFD1530" /* AppConfig.swift */,
+				"TEMP_CFC34D1B-0E54-4E14-9DA8-06011C472D1C" /* HealthSyncApp.swift */,
+				"TEMP_7605DC1D-B718-4892-99A7-71777D565F9B" /* ServerClient.swift */,
+				"TEMP_DCC25E41-44B9-440B-B9E0-131DD956336E" /* PendingUploadQueue.swift */,
+				"TEMP_02F36C5B-FC59-45E8-8A6D-83CDE145317D" /* HealthKitManager.swift */,
+				"TEMP_4D30B1DC-1B22-47D8-8880-4D08A4D4D197" /* AppConfig.swift */,
 			);
 			name = .;
 			path = .;
@@ -122,11 +122,11 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				6261E1CAC4F07C17D6EAC100 /* AppConfig.swift in Sources */,
-				46D4E37614EE5A7844051157 /* HealthKitManager.swift in Sources */,
-				7938A8DFD4FBF8966F815BC3 /* HealthSyncApp.swift in Sources */,
-				FFCA867FBC87B478BAE99710 /* PendingUploadQueue.swift in Sources */,
-				099320EA3B24F575030D8A4D /* ServerClient.swift in Sources */,
+				292C3505613145D25B50D8BE /* AppConfig.swift in Sources */,
+				1FE4109DF08966BEAC66521E /* HealthKitManager.swift in Sources */,
+				E416D9023F93CB2E6090E836 /* HealthSyncApp.swift in Sources */,
+				C06ABD399572C6E902FCB189 /* PendingUploadQueue.swift in Sources */,
+				55B4A6BF262682A8151CB0E8 /* ServerClient.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

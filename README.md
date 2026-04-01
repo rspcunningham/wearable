@@ -1,137 +1,256 @@
 # Health Sync
 
-Real-time Apple Health → Python server pipeline.
+Apple Health to personal server sync, with:
+- an iOS app in [`ios/`](./ios)
+- a FastAPI + SQLite backend in [`backend/`](./backend)
+- supporting docs in [`docs/`](./docs)
 
----
+The goal is broad Apple Health coverage for personal archival and analysis, including quantity samples, category samples, workouts, activity summaries, ECGs, workout routes, heartbeat series, audiograms, state of mind, correlations, and a profile snapshot.
 
-## Server Setup
+## Repo Layout
 
-### 1. Deploy to your VPS
+```text
+.
+├── backend/
+│   ├── main.py
+│   └── requirements.txt
+├── docs/
+│   ├── IOS_INITIAL_TESTING_PLAN.md
+│   └── ios_cd.md
+├── ios/
+│   ├── project.yml
+│   ├── AppConfig.swift
+│   ├── HealthSyncApp.swift
+│   ├── HealthKitManager.swift
+│   ├── PendingUploadQueue.swift
+│   ├── ServerClient.swift
+│   ├── Config/
+│   └── HealthSync/
+└── README.md
+```
+
+## Current Status
+
+The current app/backend pair:
+- builds from the CLI
+- supports iOS 18.0+
+- uses `xcodegen` as the source of truth for the Xcode project
+- reads runtime server config from build settings and `Info.plist`
+- posts HealthKit batches to the backend over HTTPS
+
+The generated Xcode project lives at [`ios/HealthSync.xcodeproj`](./ios/HealthSync.xcodeproj), but [`ios/project.yml`](./ios/project.yml) is the file that should be edited.
+
+## iOS App
+
+Core files:
+- [`ios/HealthSyncApp.swift`](./ios/HealthSyncApp.swift): app entry point and startup flow
+- [`ios/HealthKitManager.swift`](./ios/HealthKitManager.swift): authorization, observers, anchored sync, serialization
+- [`ios/ServerClient.swift`](./ios/ServerClient.swift): HTTP client for `/health/batch`
+- [`ios/AppConfig.swift`](./ios/AppConfig.swift): runtime config loading
+- [`ios/PendingUploadQueue.swift`](./ios/PendingUploadQueue.swift): local pending-upload queue
+
+Project/config files:
+- [`ios/project.yml`](./ios/project.yml): XcodeGen spec
+- [`ios/Config/Debug.xcconfig`](./ios/Config/Debug.xcconfig)
+- [`ios/Config/Release.xcconfig`](./ios/Config/Release.xcconfig)
+- [`ios/HealthSync/Info.plist`](./ios/HealthSync/Info.plist)
+- [`ios/HealthSync/HealthSync.entitlements`](./ios/HealthSync/HealthSync.entitlements)
+
+### iOS Prerequisites
+
+- Xcode installed
+- Command Line Tools installed
+- `xcodegen` installed
+- an Apple ID signed into Xcode on this machine at least once
+- a physical iPhone for real HealthKit testing
+
+Check tools:
 
 ```bash
-git clone <your-repo>
-cd health-server
+xcodebuild -version
+xcodegen --version
+```
 
-python -m venv venv
-source venv/bin/activate
+### iOS Configuration
+
+Edit [`ios/Config/Debug.xcconfig`](./ios/Config/Debug.xcconfig) for local testing.
+
+Required values:
+- `PRODUCT_BUNDLE_IDENTIFIER`
+- `SERVER_BASE_URL`
+- `HEALTH_API_KEY`
+
+Recommended for device signing:
+- `DEVELOPMENT_TEAM`
+
+Example:
+
+```xcconfig
+PRODUCT_BUNDLE_IDENTIFIER = com.yourname.healthsync.dev
+DEVELOPMENT_TEAM = YOURTEAMID
+SERVER_BASE_URL = https://health.example.com
+HEALTH_API_KEY = replace-me
+```
+
+`Info.plist` injects those values into the app, and `AppConfig.swift` validates them at runtime.
+
+### Generate The Xcode Project
+
+Run from the repo root:
+
+```bash
+cd /Users/robin/Desktop/aperture
+xcodegen generate --spec ios/project.yml
+```
+
+Or from inside `ios/`:
+
+```bash
+cd /Users/robin/Desktop/aperture/ios
+xcodegen generate --spec project.yml
+```
+
+### Build The iOS App
+
+Typecheck:
+
+```bash
+swiftc -typecheck \
+  -target arm64-apple-ios18.0-simulator \
+  -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" \
+  ios/AppConfig.swift \
+  ios/HealthSyncApp.swift \
+  ios/HealthKitManager.swift \
+  ios/ServerClient.swift \
+  ios/PendingUploadQueue.swift
+```
+
+Simulator build:
+
+```bash
+xcodebuild \
+  -project ios/HealthSync.xcodeproj \
+  -scheme HealthSync \
+  -configuration Debug \
+  -sdk iphonesimulator \
+  build \
+  CODE_SIGNING_ALLOWED=NO
+```
+
+Device destination discovery:
+
+```bash
+xcodebuild -project ios/HealthSync.xcodeproj -scheme HealthSync -showdestinations
+xcrun xctrace list devices
+```
+
+Device build:
+
+```bash
+xcodebuild \
+  -project ios/HealthSync.xcodeproj \
+  -scheme HealthSync \
+  -configuration Debug \
+  -destination 'platform=iOS,name=Your iPhone' \
+  build
+```
+
+For a fuller CLI deployment workflow, see [`docs/ios_cd.md`](./docs/ios_cd.md).
+
+## Backend
+
+Core files:
+- [`backend/main.py`](./backend/main.py): FastAPI app, SQLite schema, ingest/query routes
+- [`backend/requirements.txt`](./backend/requirements.txt)
+
+### Backend Setup
+
+```bash
+cd /Users/robin/Desktop/aperture/backend
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
-
-# Set your API key
-export HEALTH_API_KEY="generate-a-long-random-string-here"
-
-# Run
+export HEALTH_API_KEY="replace-me"
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-### 2. Put it behind nginx + SSL (required — iOS won't POST to plain HTTP)
+For real device use, put the backend behind HTTPS. iOS HealthKit sync should not rely on plain HTTP.
 
-```nginx
-server {
-    server_name health.yourdomain.com;
+### Backend Verification
 
-    location / {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host $host;
-    }
-}
-```
-
-Then: `certbot --nginx -d health.yourdomain.com`
-
-### 3. Run as a service (systemd)
-
-```ini
-# /etc/systemd/system/health-sync.service
-[Unit]
-Description=Health Sync Server
-
-[Service]
-WorkingDirectory=/path/to/health-server
-ExecStart=/path/to/venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000
-Environment=HEALTH_API_KEY=your-key-here
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-```
+Syntax check:
 
 ```bash
-systemctl enable health-sync
-systemctl start health-sync
+python3 -m py_compile backend/main.py
 ```
 
----
+Health check:
 
-## iOS App Setup
-
-### 1. Create Xcode project
-
-- New project → App → SwiftUI
-- Bundle ID: `com.yourname.healthsync`
-- Minimum deployment: iOS 16+
-
-### 2. Add files
-
-Copy these into your Xcode project:
-- `HealthSyncApp.swift`
-- `HealthKitManager.swift`
-- `ServerClient.swift`
-
-### 3. Configure ServerClient.swift
-
-```swift
-private let baseURL = "https://health.yourdomain.com"
-private let apiKey  = "your-api-key-here"
+```bash
+curl http://127.0.0.1:8000/ping
 ```
 
-### 4. Enable HealthKit capability
+Authenticated summary:
 
-In Xcode: Target → Signing & Capabilities → + Capability → HealthKit
-Check "Background Delivery"
-
-### 5. Info.plist keys required
-
-```xml
-<key>NSHealthShareUsageDescription</key>
-<string>This app syncs your health data to your personal server.</string>
-<key>NSHealthUpdateUsageDescription</key>
-<string>This app syncs your health data to your personal server.</string>
+```bash
+curl \
+  -H "X-API-Key: $HEALTH_API_KEY" \
+  http://127.0.0.1:8000/health/summary
 ```
 
-### 6. Build & install via TestFlight or direct device
+## API Surface
 
-For personal use, TestFlight is easiest — no App Store review needed.
+Primary ingest endpoint:
+- `POST /health/batch`
 
----
+Query endpoints:
+- `GET /health/records`
+- `GET /health/workouts`
+- `GET /health/electrocardiograms`
+- `GET /health/workout-routes`
+- `GET /health/heartbeat-series`
+- `GET /health/audiograms`
+- `GET /health/state-of-mind`
+- `GET /health/correlations`
+- `GET /health/profile-snapshot`
+- `GET /health/summary`
+- `GET /ping`
 
-## API Endpoints
+All `/health/*` endpoints require the `X-API-Key` header.
 
-| Method | Path | Description |
-|---|---|---|
-| POST | `/health/batch` | Ingest records (used by iOS app) |
-| GET | `/health/records?record_type=X&since=2024-01-01` | Query records |
-| GET | `/health/workouts?since=2024-01-01` | Query workouts |
-| GET | `/health/summary` | Overview of all stored data types |
-| GET | `/ping` | Health check |
+## HealthKit Coverage
 
-All endpoints except `/ping` require `X-API-Key` header.
+Implemented today:
+- broad non-clinical quantity and category coverage
+- workouts
+- activity summaries
+- ECGs
+- workout routes
+- heartbeat series
+- audiograms
+- state of mind
+- correlations
+- profile snapshot data:
+  - date of birth
+  - biological sex
+  - blood type
+  - Fitzpatrick skin type
+  - wheelchair use
+  - activity move mode
 
-Auto-generated API docs: `https://health.yourdomain.com/docs`
+Not currently implemented:
+- scored assessments such as GAD-7 and PHQ-9
+- vision prescriptions
+- clinical/EHR/FHIR records
 
----
+## Docs
 
-## How it works
-
-1. **First launch**: app requests HealthKit permissions, then bulk-syncs all historical data
-2. **Ongoing**: HealthKit wakes the app in the background whenever new data arrives (effectively real-time for most types)
-3. **Anchored queries**: only new records since last sync are fetched and posted — no duplicates
-4. **Retry logic**: failed POSTs retry 3x with exponential backoff
-
----
+- [`docs/IOS_INITIAL_TESTING_PLAN.md`](./docs/IOS_INITIAL_TESTING_PLAN.md): higher-level roadmap
+- [`docs/ios_cd.md`](./docs/ios_cd.md): CLI project generation, build, signing, and install workflow
 
 ## Notes
 
-- Apple Watch data flows: Watch → iPhone HealthKit → your app → server
-- "Immediate" background delivery means within a few minutes, not milliseconds
-- The app must have been opened at least once after install for background delivery to work
-- Some data types (ECG, clinical records) require additional Apple entitlements
+- Apple Watch data reaches this app through HealthKit on the iPhone.
+- Background delivery is near-real-time, not instant.
+- The app must be opened at least once after install before background delivery can begin.
+- A physical device is required to meaningfully test HealthKit authorization and background behavior.
