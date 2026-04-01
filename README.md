@@ -13,7 +13,8 @@ The goal is broad Apple Health coverage for personal archival and analysis, incl
 .
 ├── backend/
 │   ├── main.py
-│   └── requirements.txt
+│   ├── pyproject.toml
+│   └── uv.lock
 ├── docs/
 │   ├── IOS_INITIAL_TESTING_PLAN.md
 │   └── ios_cd.md
@@ -45,7 +46,7 @@ The generated Xcode project lives at [`ios/HealthSync.xcodeproj`](./ios/HealthSy
 Core files:
 - [`ios/HealthSyncApp.swift`](./ios/HealthSyncApp.swift): app entry point and startup flow
 - [`ios/HealthKitManager.swift`](./ios/HealthKitManager.swift): authorization, observers, anchored sync, serialization
-- [`ios/ServerClient.swift`](./ios/ServerClient.swift): HTTP client for `/health/batch`
+- [`ios/ServerClient.swift`](./ios/ServerClient.swift): HTTP client for `/ingest`
 - [`ios/AppConfig.swift`](./ios/AppConfig.swift): runtime config loading
 - [`ios/PendingUploadQueue.swift`](./ios/PendingUploadQueue.swift): local pending-upload queue
 
@@ -160,18 +161,16 @@ For a fuller CLI deployment workflow, see [`docs/ios_cd.md`](./docs/ios_cd.md).
 ## Backend
 
 Core files:
-- [`backend/main.py`](./backend/main.py): FastAPI app, SQLite schema, ingest/query routes
-- [`backend/requirements.txt`](./backend/requirements.txt)
+- [`backend/main.py`](./backend/main.py): FastAPI app, SQLite schema, ingest route
+- [`backend/pyproject.toml`](./backend/pyproject.toml): project metadata and dependencies
 
 ### Backend Setup
 
 ```bash
 cd /Users/robin/Desktop/aperture/backend
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+uv sync
 export HEALTH_API_KEY="replace-me"
-uvicorn main:app --host 0.0.0.0 --port 8000
+uv run uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
 For real device use, put the backend behind HTTPS. iOS HealthKit sync should not rely on plain HTTP.
@@ -200,23 +199,8 @@ curl \
 
 ## API Surface
 
-Primary ingest endpoint:
-- `POST /health/batch`
-
-Query endpoints:
-- `GET /health/records`
-- `GET /health/workouts`
-- `GET /health/electrocardiograms`
-- `GET /health/workout-routes`
-- `GET /health/heartbeat-series`
-- `GET /health/audiograms`
-- `GET /health/state-of-mind`
-- `GET /health/correlations`
-- `GET /health/profile-snapshot`
-- `GET /health/summary`
-- `GET /ping`
-
-All `/health/*` endpoints require the `X-API-Key` header.
+- `POST /ingest` — main batch ingestion endpoint (requires `X-API-Key` header)
+- `GET /health` — health check
 
 ## HealthKit Coverage
 
