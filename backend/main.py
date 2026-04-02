@@ -516,8 +516,9 @@ def resolve_audiogram_point(point: AudiogramSensitivityPoint) -> dict:
 def ingest_batch(payload: BatchPayload):
     """Main ingestion endpoint — iOS app posts batches here."""
     with get_db() as conn:
+        cur = conn.cursor()
         if payload.records:
-            conn.executemany(
+            cur.executemany(
                 """
                 INSERT INTO health_records
                     (sample_uuid, record_type, value, unit, start_date, end_date, device, source_name, metadata)
@@ -542,7 +543,7 @@ def ingest_batch(payload: BatchPayload):
             )
 
         if payload.workouts:
-            conn.executemany(
+            cur.executemany(
                 """
                 INSERT INTO workouts
                     (sample_uuid, workout_type, start_date, end_date, duration_seconds,
@@ -568,7 +569,7 @@ def ingest_batch(payload: BatchPayload):
             )
 
         if payload.activity_summaries:
-            conn.executemany(
+            cur.executemany(
                 """
                 INSERT INTO activity_summaries
                     (date, active_energy_burned, active_energy_burned_goal,
@@ -596,7 +597,7 @@ def ingest_batch(payload: BatchPayload):
             )
 
         if payload.profile_snapshots:
-            conn.executemany(
+            cur.executemany(
                 """
                 INSERT INTO profile_snapshots
                     (snapshot_name, captured_at, date_of_birth, biological_sex,
@@ -628,7 +629,7 @@ def ingest_batch(payload: BatchPayload):
             )
 
         if payload.electrocardiograms:
-            conn.executemany(
+            cur.executemany(
                 """
                 INSERT INTO electrocardiograms
                     (sample_uuid, start_date, end_date, device, source_name,
@@ -664,7 +665,7 @@ def ingest_batch(payload: BatchPayload):
             )
 
         if payload.workout_routes:
-            conn.executemany(
+            cur.executemany(
                 """
                 INSERT INTO workout_routes
                     (sample_uuid, start_date, end_date, device, source_name, locations_json, metadata)
@@ -688,7 +689,7 @@ def ingest_batch(payload: BatchPayload):
             )
 
         if payload.heartbeat_series:
-            conn.executemany(
+            cur.executemany(
                 """
                 INSERT INTO heartbeat_series
                     (sample_uuid, start_date, end_date, device, source_name, beats_json, metadata)
@@ -712,7 +713,7 @@ def ingest_batch(payload: BatchPayload):
             )
 
         if payload.audiograms:
-            conn.executemany(
+            cur.executemany(
                 """
                 INSERT INTO audiograms
                     (sample_uuid, start_date, end_date, device, source_name, sensitivity_points_json, metadata)
@@ -736,7 +737,7 @@ def ingest_batch(payload: BatchPayload):
             )
 
         if payload.state_of_mind:
-            conn.executemany(
+            cur.executemany(
                 """
                 INSERT INTO state_of_mind_records
                     (sample_uuid, start_date, end_date, device, source_name,
@@ -770,7 +771,7 @@ def ingest_batch(payload: BatchPayload):
             )
 
         if payload.correlations:
-            conn.executemany(
+            cur.executemany(
                 """
                 INSERT INTO correlations
                     (sample_uuid, correlation_type, start_date, end_date, device, source_name, objects_json, metadata)
