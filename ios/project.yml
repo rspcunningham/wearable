@@ -16,6 +16,7 @@ settings:
     MARKETING_VERSION: 0.1.0
     SWIFT_VERSION: 5.0
     CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: K5PRHP9Q23
     TARGETED_DEVICE_FAMILY: 1
     SUPPORTS_MACCATALYST: NO
 
@@ -25,13 +26,10 @@ targets:
     platform: iOS
     deploymentTarget: "18.0"
     sources:
-      - path: .
-        includes:
-          - AppConfig.swift
-          - HealthSyncApp.swift
-          - HealthKitManager.swift
-          - PendingUploadQueue.swift
-          - ServerClient.swift
+      - path: AppConfig.swift
+      - path: HealthSyncApp.swift
+      - path: HealthKitManager.swift
+      - path: ServerClient.swift
     configFiles:
       Debug: Config/Debug.xcconfig
       Release: Config/Release.xcconfig

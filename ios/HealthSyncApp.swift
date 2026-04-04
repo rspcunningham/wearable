@@ -3,88 +3,161 @@ import HealthKit
 
 @main
 struct HealthSyncApp: App {
-    @StateObject private var hkManager = HealthKitManager.shared
-
     var body: some Scene {
         WindowGroup {
-            ContentView()
-                .environmentObject(hkManager)
-                .task {
-                    await setup()
-                }
-        }
-    }
-
-    func setup() async {
-        do {
-            _ = try ServerClient.shared.loadConfig()
-            try await hkManager.requestAuthorization()
-            _ = await hkManager.syncProfileSnapshot()
-            hkManager.enableBackgroundDelivery()
-            hkManager.startObservers()
-            Task { _ = await hkManager.requestQueueFlush(reason: "launch") }
-
-            // First launch: sync all historical data
-            let hasSeeded = UserDefaults.standard.bool(forKey: "has_seeded_v1")
-            if !hasSeeded {
-                let didSeed = await hkManager.syncAllHistoricalData()
-                if didSeed {
-                    UserDefaults.standard.set(true, forKey: "has_seeded_v1")
-                }
-            }
-        } catch {
-            hkManager.syncStatus = "Setup failed"
-            print("[Setup] Auth error: \(error)")
+            TestView()
         }
     }
 }
 
-
-struct ContentView: View {
-    @EnvironmentObject var hkManager: HealthKitManager
+struct TestView: View {
+    @State private var lines: [String] = []
+    @State private var running = false
 
     var body: some View {
-        VStack(spacing: 24) {
-            Image(systemName: "heart.fill")
-                .font(.system(size: 48))
-                .foregroundColor(.red)
+        VStack(spacing: 16) {
+            Text("Health Sync Test").font(.headline)
 
-            Text("Health Sync")
-                .font(.title).bold()
-
-            StatusRow(label: "Status", value: hkManager.syncStatus)
-
-            if let last = hkManager.lastSyncDate {
-                StatusRow(label: "Last sync", value: last.formatted())
+            ScrollView {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                        Text(line)
+                            .font(.system(.caption, design: .monospaced))
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            Text("This app runs in the background and continuously syncs your Apple Health data to your server.")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal)
-
-            Button("Sync Now") {
+            Button(running ? "Running..." : "Run Test") {
+                guard !running else { return }
+                running = true
+                lines = []
                 Task {
-                    _ = await hkManager.syncProfileSnapshot(force: true)
-                    _ = await hkManager.syncAllHistoricalData()
+                    await runTest()
+                    running = false
                 }
             }
             .buttonStyle(.bordered)
+            .disabled(running)
         }
         .padding()
     }
-}
 
-struct StatusRow: View {
-    let label: String
-    let value: String
-    var body: some View {
-        HStack {
-            Text(label).foregroundColor(.secondary)
-            Spacer()
-            Text(value).bold()
+    private func emit(_ msg: String) {
+        lines.append(msg)
+    }
+
+    private func runTest() async {
+        // 1. Config
+        let config: AppConfig
+        do {
+            config = try AppConfig.load()
+            emit("1. Config OK")
+            emit("   URL: \(config.baseURL)")
+            emit("   Key: \(String(config.apiKey.prefix(4)))...")
+        } catch {
+            emit("1. Config FAILED: \(error.localizedDescription)")
+            return
         }
-        .padding(.horizontal)
+
+        // 2. Server reachable?
+        emit("2. Testing server...")
+        do {
+            let url = config.baseURL.appending(path: "health")
+            var req = URLRequest(url: url)
+            req.httpMethod = "GET"
+            req.timeoutInterval = 10
+            let (data, response) = try await URLSession.shared.data(for: req)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            let body = String(data: data, encoding: .utf8) ?? "n/a"
+            emit("   Status: \(status)")
+            emit("   Body: \(body)")
+            guard status == 200 else {
+                emit("2. FAILED: non-200 status")
+                return
+            }
+        } catch {
+            emit("2. Server FAILED: \(error.localizedDescription)")
+            return
+        }
+
+        // 3. HealthKit auth
+        let store = HKHealthStore()
+        let stepType = HKQuantityType.quantityType(forIdentifier: .stepCount)!
+        do {
+            try await store.requestAuthorization(toShare: [], read: [stepType])
+            emit("3. HealthKit auth OK")
+        } catch {
+            emit("3. HealthKit FAILED: \(error.localizedDescription)")
+            return
+        }
+
+        // 4. Query step count (last 7 days, max 100)
+        let start = Calendar.current.date(byAdding: .day, value: -7, to: Date())!
+        let predicate = HKQuery.predicateForSamples(withStart: start, end: nil)
+
+        let samples: [HKQuantitySample]? = await withCheckedContinuation { cont in
+            let q = HKSampleQuery(
+                sampleType: stepType,
+                predicate: predicate,
+                limit: 100,
+                sortDescriptors: [NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: false)]
+            ) { _, results, error in
+                if let error {
+                    cont.resume(returning: nil)
+                    return
+                }
+                cont.resume(returning: (results as? [HKQuantitySample]) ?? [])
+            }
+            store.execute(q)
+        }
+
+        guard let samples else {
+            emit("4. Query FAILED")
+            return
+        }
+        emit("4. Query OK: \(samples.count) step samples")
+
+        if samples.isEmpty {
+            emit("   No step data in last 7 days — nothing to upload")
+            return
+        }
+
+        // Show a sample
+        let first = samples[0]
+        emit("   e.g. \(first.quantity.doubleValue(for: .count())) steps @ \(first.startDate)")
+
+        // 5. Serialize
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+
+        var payload = BatchPayload()
+        for s in samples {
+            payload.records.append(HealthRecord(
+                sampleUUID: s.uuid.uuidString,
+                recordType: s.quantityType.identifier,
+                value: s.quantity.doubleValue(for: .count()),
+                unit: "count",
+                startDate: iso.string(from: s.startDate),
+                endDate: iso.string(from: s.endDate),
+                device: s.device?.name,
+                sourceName: s.sourceRevision.source.name,
+                metadata: nil
+            ))
+        }
+        emit("5. Serialized \(payload.records.count) records")
+
+        // 6. POST
+        let ingestURL = config.baseURL.appending(path: "ingest")
+        emit("6. POSTing to \(ingestURL)...")
+        let result = await ServerClient.shared.postBatch(payload)
+        switch result {
+        case .skipped:
+            emit("   Skipped (empty payload)")
+        case .success(let response):
+            emit("   SUCCESS: \(response.inserted.records) records inserted")
+        case .failure(let msg):
+            emit("   FAILED: \(msg)")
+        }
     }
 }

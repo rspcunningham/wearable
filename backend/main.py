@@ -3,9 +3,15 @@ from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel, Field
 from typing import Optional, Any
 from datetime import datetime, date
+from dateutil.parser import isoparse
 import json
+import logging
 import os
+import time
 import psycopg
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("healthsync")
 
 app = FastAPI(title="Health Sync Server")
 
@@ -340,7 +346,7 @@ class Workout(BaseModel):
 
 
 class ActivitySummary(BaseModel):
-    date: str  # kept as str — iOS sends "YYYY-MM-DD", parsed to date at insert
+    date: str  # accepts ISO-8601 datetime or YYYY-MM-DD; normalized to date at insert
     active_energy_burned: Optional[float] = None
     active_energy_burned_goal: Optional[float] = None
     apple_move_time: Optional[float] = None
@@ -515,6 +521,35 @@ def resolve_audiogram_point(point: AudiogramSensitivityPoint) -> dict:
 @app.post("/ingest", dependencies=[Depends(verify_api_key)])
 def ingest_batch(payload: BatchPayload):
     """Main ingestion endpoint — iOS app posts batches here."""
+    counts = {
+        "records": len(payload.records),
+        "workouts": len(payload.workouts),
+        "activity_summaries": len(payload.activity_summaries),
+        "profile_snapshots": len(payload.profile_snapshots),
+        "electrocardiograms": len(payload.electrocardiograms),
+        "workout_routes": len(payload.workout_routes),
+        "heartbeat_series": len(payload.heartbeat_series),
+        "audiograms": len(payload.audiograms),
+        "state_of_mind": len(payload.state_of_mind),
+        "correlations": len(payload.correlations),
+    }
+    nonempty = {k: v for k, v in counts.items() if v > 0}
+    total = sum(counts.values())
+    logger.info(f"INGEST: {total} items — {nonempty}")
+    t0 = time.time()
+
+    try:
+        _do_ingest(payload)
+    except Exception:
+        logger.exception("INGEST FAILED")
+        raise
+
+    elapsed = time.time() - t0
+    logger.info(f"INGEST OK: {total} items in {elapsed:.2f}s")
+    return {"status": "ok", "inserted": counts}
+
+
+def _do_ingest(payload: BatchPayload):
     with get_db() as conn:
         cur = conn.cursor()
         if payload.records:
@@ -589,7 +624,7 @@ def ingest_batch(payload: BatchPayload):
                     update_count = activity_summaries.update_count + 1
                 """,
                 [
-                    (s.date, s.active_energy_burned, s.active_energy_burned_goal,
+                    (isoparse(s.date).date().isoformat(), s.active_energy_burned, s.active_energy_burned_goal,
                      s.apple_move_time, s.apple_move_time_goal, s.apple_exercise_time,
                      s.apple_exercise_time_goal, s.apple_stand_hours, s.apple_stand_hours_goal)
                     for s in payload.activity_summaries
@@ -796,21 +831,6 @@ def ingest_batch(payload: BatchPayload):
                 ],
             )
 
-    return {
-        "status": "ok",
-        "inserted": {
-            "records": len(payload.records),
-            "workouts": len(payload.workouts),
-            "activity_summaries": len(payload.activity_summaries),
-            "profile_snapshots": len(payload.profile_snapshots),
-            "electrocardiograms": len(payload.electrocardiograms),
-            "workout_routes": len(payload.workout_routes),
-            "heartbeat_series": len(payload.heartbeat_series),
-            "audiograms": len(payload.audiograms),
-            "state_of_mind": len(payload.state_of_mind),
-            "correlations": len(payload.correlations),
-        }
-    }
 
 
 @app.get("/health")

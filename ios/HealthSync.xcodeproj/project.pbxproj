@@ -7,22 +7,20 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		1FE4109DF08966BEAC66521E /* HealthKitManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = "TEMP_02F36C5B-FC59-45E8-8A6D-83CDE145317D" /* HealthKitManager.swift */; };
-		292C3505613145D25B50D8BE /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = "TEMP_4D30B1DC-1B22-47D8-8880-4D08A4D4D197" /* AppConfig.swift */; };
-		55B4A6BF262682A8151CB0E8 /* ServerClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = "TEMP_7605DC1D-B718-4892-99A7-71777D565F9B" /* ServerClient.swift */; };
-		C06ABD399572C6E902FCB189 /* PendingUploadQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = "TEMP_DCC25E41-44B9-440B-B9E0-131DD956336E" /* PendingUploadQueue.swift */; };
-		E416D9023F93CB2E6090E836 /* HealthSyncApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = "TEMP_CFC34D1B-0E54-4E14-9DA8-06011C472D1C" /* HealthSyncApp.swift */; };
+		4A87489A64D27BAB0EBF97B2 /* ServerClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1702AC50DFFFD383EA8F8A0 /* ServerClient.swift */; };
+		735F3DD3A01AB790E32D7A3C /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 936A1A6DD9233FD6236FE79A /* AppConfig.swift */; };
+		91016E48FE1A3F7AC6D2ED70 /* HealthKitManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7ECC5CE34C7834F548CF0ED1 /* HealthKitManager.swift */; };
+		D7EDB339ABF8300B82DA510F /* HealthSyncApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF5C3257B5799B3C0D1BE266 /* HealthSyncApp.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		1D343810F4B4383E36DAE2F1 /* HealthSync.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = HealthSync.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		3E527C53771A23331E32D5AC /* Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Debug.xcconfig; sourceTree = "<group>"; };
+		7ECC5CE34C7834F548CF0ED1 /* HealthKitManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthKitManager.swift; sourceTree = "<group>"; };
+		936A1A6DD9233FD6236FE79A /* AppConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfig.swift; sourceTree = "<group>"; };
+		A1702AC50DFFFD383EA8F8A0 /* ServerClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerClient.swift; sourceTree = "<group>"; };
+		AF5C3257B5799B3C0D1BE266 /* HealthSyncApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthSyncApp.swift; sourceTree = "<group>"; };
 		F040879BF50CADE1FE9031E9 /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
-		"TEMP_02F36C5B-FC59-45E8-8A6D-83CDE145317D" /* HealthKitManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthKitManager.swift; sourceTree = "<group>"; };
-		"TEMP_4D30B1DC-1B22-47D8-8880-4D08A4D4D197" /* AppConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfig.swift; sourceTree = "<group>"; };
-		"TEMP_7605DC1D-B718-4892-99A7-71777D565F9B" /* ServerClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerClient.swift; sourceTree = "<group>"; };
-		"TEMP_CFC34D1B-0E54-4E14-9DA8-06011C472D1C" /* HealthSyncApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthSyncApp.swift; sourceTree = "<group>"; };
-		"TEMP_DCC25E41-44B9-440B-B9E0-131DD956336E" /* PendingUploadQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PendingUploadQueue.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -37,6 +35,10 @@
 		28FBFFD0D3C692B467C9E997 = {
 			isa = PBXGroup;
 			children = (
+				936A1A6DD9233FD6236FE79A /* AppConfig.swift */,
+				7ECC5CE34C7834F548CF0ED1 /* HealthKitManager.swift */,
+				AF5C3257B5799B3C0D1BE266 /* HealthSyncApp.swift */,
+				A1702AC50DFFFD383EA8F8A0 /* ServerClient.swift */,
 				F0B6FE205772ACFD89B3499D /* Config */,
 				04FE962AFCDCE2EB2C2661AA /* Products */,
 			);
@@ -49,19 +51,6 @@
 				F040879BF50CADE1FE9031E9 /* Release.xcconfig */,
 			);
 			path = Config;
-			sourceTree = "<group>";
-		};
-		"TEMP_6BE36E0D-B898-43CE-8915-982B55281736" /* . */ = {
-			isa = PBXGroup;
-			children = (
-				"TEMP_CFC34D1B-0E54-4E14-9DA8-06011C472D1C" /* HealthSyncApp.swift */,
-				"TEMP_7605DC1D-B718-4892-99A7-71777D565F9B" /* ServerClient.swift */,
-				"TEMP_DCC25E41-44B9-440B-B9E0-131DD956336E" /* PendingUploadQueue.swift */,
-				"TEMP_02F36C5B-FC59-45E8-8A6D-83CDE145317D" /* HealthKitManager.swift */,
-				"TEMP_4D30B1DC-1B22-47D8-8880-4D08A4D4D197" /* AppConfig.swift */,
-			);
-			name = .;
-			path = .;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -94,6 +83,7 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					892A921C4AE312FBC7AB053B = {
+						DevelopmentTeam = K5PRHP9Q23;
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -122,11 +112,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				292C3505613145D25B50D8BE /* AppConfig.swift in Sources */,
-				1FE4109DF08966BEAC66521E /* HealthKitManager.swift in Sources */,
-				E416D9023F93CB2E6090E836 /* HealthSyncApp.swift in Sources */,
-				C06ABD399572C6E902FCB189 /* PendingUploadQueue.swift in Sources */,
-				55B4A6BF262682A8151CB0E8 /* ServerClient.swift in Sources */,
+				735F3DD3A01AB790E32D7A3C /* AppConfig.swift in Sources */,
+				91016E48FE1A3F7AC6D2ED70 /* HealthKitManager.swift in Sources */,
+				D7EDB339ABF8300B82DA510F /* HealthSyncApp.swift in Sources */,
+				4A87489A64D27BAB0EBF97B2 /* ServerClient.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -192,6 +181,7 @@
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = K5PRHP9Q23;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
@@ -282,6 +272,7 @@
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = K5PRHP9Q23;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;

@@ -5,6 +5,7 @@ import CoreLocation
 // MARK: - Data Models (mirror server's Pydantic models)
 
 struct HealthRecord: Codable {
+    let sampleUUID: String
     let recordType: String
     let value: Double?
     let unit: String?
@@ -15,6 +16,7 @@ struct HealthRecord: Codable {
     let metadata: [String: String]?
 
     enum CodingKeys: String, CodingKey {
+        case sampleUUID = "sample_uuid"
         case recordType = "record_type"
         case value, unit
         case startDate = "start_date"
@@ -26,6 +28,7 @@ struct HealthRecord: Codable {
 }
 
 struct WorkoutRecord: Codable {
+    let sampleUUID: String
     let workoutType: String
     let startDate: String
     let endDate: String?
@@ -36,6 +39,7 @@ struct WorkoutRecord: Codable {
     let metadata: [String: String]?
 
     enum CodingKeys: String, CodingKey {
+        case sampleUUID = "sample_uuid"
         case workoutType = "workout_type"
         case startDate = "start_date"
         case endDate = "end_date"
@@ -385,16 +389,27 @@ final class HealthKitManager: ObservableObject, @unchecked Sendable {
         return f
     }()
 
-    // Persisted anchors so we only fetch new data each time
-    private var anchors: [String: HKQueryAnchor] = [:]
-    private let anchorsKey = "hk_anchors_v1"
-    private let profileSnapshotStateKey = "profile_snapshot_last_enqueued_v1"
-    private let flushTaskLock = NSLock()
-    private var pendingFlushTask: Task<Bool, Never>?
-    private var pendingFlushToken: UUID?
+    private let anchorsKey = "hk_anchors_v2"
+    private let syncHistoryDays = 7  // TODO: remove limit for full historical sync
 
     @Published var lastSyncDate: Date?
     @Published var syncStatus: String = "Idle"
+    @Published var logMessages: [String] = []
+
+    func log(_ msg: String) {
+        let ts = Self.timeFormatter.string(from: Date())
+        let line = "[\(ts)] \(msg)"
+        print(line)
+        Task { @MainActor in
+            logMessages.append(line)
+        }
+    }
+
+    private static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        return f
+    }()
 
     // MARK: All quantity types we want to track
 
@@ -687,172 +702,162 @@ final class HealthKitManager: ObservableObject, @unchecked Sendable {
         try await store.requestAuthorization(toShare: [], read: allReadTypes)
     }
 
-    // MARK: - Background delivery setup
+    // MARK: - Sync engine
 
-    func enableBackgroundDelivery() {
-        for sampleType in allSampleTypes {
-            store.enableBackgroundDelivery(for: sampleType, frequency: .immediate) { _, _ in }
+    func syncAll() async {
+        logMessages = []
+        let types = allSampleTypes
+        log("Starting sync: \(types.count) types, last \(syncHistoryDays) days")
+
+        // Preflight: verify server is reachable and API key works
+        log("Preflight: testing server connection...")
+        let preflightOk = await postDirectly(BatchPayload())
+        if !preflightOk {
+            syncStatus = "Server unreachable"
+            log("ERROR: Preflight failed — check URL and API key")
+            return
         }
-    }
+        log("Preflight OK")
 
-    // MARK: - Observer queries (call once on app launch)
+        await syncProfileSnapshot()
 
-    func startObservers() {
-        for sampleType in allSampleTypes {
-            startObserver(for: sampleType)
-        }
-    }
+        var succeeded = 0
+        var failed = 0
+        var skipped = 0
 
-    private func startObserver(for type: HKSampleType) {
-        let query = HKObserverQuery(sampleType: type, predicate: nil) { [weak self] _, completion, error in
-            guard error == nil else { completion(); return }
-            Task {
-                _ = await self?.syncNewData(for: type)
-                completion()
-                _ = await self?.requestQueueFlush(reason: "observer-\(type.identifier)")
+        for (index, type) in types.enumerated() {
+            let name = shortName(for: type)
+            syncStatus = "Syncing \(index + 1)/\(types.count): \(name)..."
+
+            let result = await syncType(type)
+            switch result {
+            case .uploaded(let count):
+                succeeded += 1
+                log("\(name): OK (\(count) samples)")
+            case .empty:
+                skipped += 1
+            case .failed(let reason):
+                failed += 1
+                log("\(name): ERROR — \(reason)")
             }
         }
-        store.execute(query)
-    }
 
-    // MARK: - Anchored fetch + POST
-
-    func syncNewData(for type: HKSampleType) async -> Bool {
-        let typeKey = type.identifier
-        let anchor = loadAnchor(for: typeKey)
-        let healthStore = store
-
-        let result: (samples: [HKSample], deletedCount: Int, newAnchor: HKQueryAnchor?)? = await withCheckedContinuation { continuation in
-            let query = HKAnchoredObjectQuery(
-                type: type,
-                predicate: nil,
-                anchor: anchor,
-                limit: HKObjectQueryNoLimit
-            ) { _, samples, deleted, newAnchor, error in
-                if let error {
-                    print("[HealthKitManager] Query error for \(type.identifier): \(error.localizedDescription)")
-                    continuation.resume(returning: nil)
-                    return
-                }
-
-                continuation.resume(returning: (
-                    samples: samples ?? [],
-                    deletedCount: deleted?.count ?? 0,
-                    newAnchor: newAnchor
-                ))
-            }
-            healthStore.execute(query)
-        }
-
-        guard let result else {
-            return false
-        }
-
-        guard !result.samples.isEmpty else {
-            if result.deletedCount > 0 {
-                print("[HealthKitManager] Ignoring \(result.deletedCount) deleted objects for \(type.identifier) until delete handling is implemented")
-            }
-            saveAnchor(result.newAnchor, for: typeKey)
-            return true
-        }
-
-        let didQueue = await enqueueSamples(result.samples, type: type)
-        if didQueue {
-            saveAnchor(result.newAnchor, for: typeKey)
-        }
-        return didQueue
-    }
-
-    // Initial full historical sync — call once on first launch
-    func syncAllHistoricalData() async -> Bool {
-        syncStatus = "Syncing historical data..."
-        var allSucceeded = true
-
-        let profileSnapshotSucceeded = await syncProfileSnapshot()
-        allSucceeded = allSucceeded && profileSnapshotSucceeded
-
-        for sampleType in allSampleTypes {
-            let succeeded = await syncNewData(for: sampleType)
-            allSucceeded = allSucceeded && succeeded
-        }
-
-        let activitySummarySyncSucceeded = await syncActivitySummaries()
-        allSucceeded = allSucceeded && activitySummarySyncSucceeded
-
-        let queueFlushSucceeded = await requestQueueFlush(reason: "initial-seed")
-        allSucceeded = allSucceeded && queueFlushSucceeded
-
-        if allSucceeded {
+        log("Done: \(succeeded) uploaded, \(skipped) empty, \(failed) failed")
+        if failed == 0 {
             syncStatus = "Up to date"
             lastSyncDate = Date()
         } else {
-            syncStatus = "Sync incomplete"
-        }
-
-        return allSucceeded
-    }
-
-    func syncProfileSnapshot(force: Bool = false) async -> Bool {
-        let snapshot = buildProfileSnapshot()
-
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-
-        guard let encoded = try? encoder.encode(snapshot) else {
-            print("[HealthKitManager] Failed to encode profile snapshot")
-            return false
-        }
-
-        let signature = String(decoding: encoded, as: UTF8.self)
-        if !force,
-           let previousSignature = UserDefaults.standard.string(forKey: profileSnapshotStateKey),
-           previousSignature == signature {
-            return true
-        }
-
-        var payload = BatchPayload()
-        payload.profileSnapshots = [snapshot]
-
-        do {
-            try await PendingUploadQueue.shared.enqueue(payload: payload, source: "profile_snapshot")
-            UserDefaults.standard.set(signature, forKey: profileSnapshotStateKey)
-            return true
-        } catch {
-            print("[HealthKitManager] Profile snapshot queue failed: \(error)")
-            return false
+            syncStatus = "Done (\(failed) failed)"
         }
     }
 
-    // MARK: - Translate samples → server models
+    private enum SyncResult {
+        case uploaded(Int)
+        case empty
+        case failed(String)
+    }
 
-    private func enqueueSamples(_ samples: [HKSample], type: HKSampleType) async -> Bool {
-        var payload = BatchPayload()
+    private func syncType(_ type: HKSampleType) async -> SyncResult {
+        let batchSize = isComplexType(type) ? 50 : 500
+        var anchor = loadAnchor(for: type.identifier)
+        let predicate = datePredicate(lastDays: syncHistoryDays)
+        var totalUploaded = 0
 
-        for sample in samples {
-            guard let fragment = await payloadFragment(for: sample) else {
-                print("[HealthKitManager] Failed to serialize \(sample.sampleType.identifier) sample \(sample.uuid.uuidString)")
-                return false
+        while true {
+            let result = await fetchBatch(type: type, predicate: predicate, anchor: anchor, limit: batchSize)
+            guard let result else { return .failed("HealthKit query error") }
+
+            guard !result.samples.isEmpty else {
+                saveAnchor(result.newAnchor, for: type.identifier)
+                return totalUploaded > 0 ? .uploaded(totalUploaded) : .empty
             }
-            payload.merge(fragment)
-        }
 
-        guard !payload.isEmpty else {
-            print("[HealthKitManager] Nothing serializable produced for \(type.identifier)")
+            var payload = BatchPayload()
+            for sample in result.samples {
+                if let fragment = await payloadFragment(for: sample) {
+                    payload.merge(fragment)
+                }
+            }
+
+            if payload.isEmpty {
+                saveAnchor(result.newAnchor, for: type.identifier)
+                anchor = result.newAnchor
+                continue
+            }
+
+            guard await postDirectly(payload) else {
+                return .failed("POST failed after \(totalUploaded) samples")
+            }
+
+            totalUploaded += result.samples.count
+            saveAnchor(result.newAnchor, for: type.identifier)
+            anchor = result.newAnchor
+        }
+    }
+
+    private func fetchBatch(
+        type: HKSampleType,
+        predicate: NSPredicate?,
+        anchor: HKQueryAnchor?,
+        limit: Int
+    ) async -> (samples: [HKSample], newAnchor: HKQueryAnchor?)? {
+        let healthStore = store
+
+        return await withCheckedContinuation { continuation in
+            let query = HKAnchoredObjectQuery(
+                type: type,
+                predicate: predicate,
+                anchor: anchor,
+                limit: limit
+            ) { _, samples, _, newAnchor, error in
+                if let error {
+                    print("[Sync] Query error for \(type.identifier): \(error.localizedDescription)")
+                    continuation.resume(returning: nil)
+                    return
+                }
+                continuation.resume(returning: (samples: samples ?? [], newAnchor: newAnchor))
+            }
+            healthStore.execute(query)
+        }
+    }
+
+    private func postDirectly(_ payload: BatchPayload) async -> Bool {
+        switch await ServerClient.shared.postBatch(payload) {
+        case .skipped, .success:
+            return true
+        case .failure(let message):
+            log("ERROR: POST failed — \(message)")
             return false
         }
+    }
 
-        let queued: Bool
-        do {
-            try await PendingUploadQueue.shared.enqueue(payload: payload, source: type.identifier)
-            queued = true
-        } catch {
-            queued = false
+    private func syncProfileSnapshot() async {
+        var payload = BatchPayload()
+        payload.profileSnapshots = [buildProfileSnapshot()]
+        if await postDirectly(payload) {
+            log("Profile snapshot: OK")
         }
+    }
 
-        if !queued {
-            print("[HealthKitManager] Queue failed for \(type.identifier)")
+    private func isComplexType(_ type: HKSampleType) -> Bool {
+        type == HKObjectType.electrocardiogramType() ||
+        type == HKSeriesType.workoutRoute() ||
+        type == HKSeriesType.heartbeat()
+    }
+
+    private func datePredicate(lastDays: Int) -> NSPredicate {
+        let start = Calendar.current.date(byAdding: .day, value: -lastDays, to: Date())!
+        return HKQuery.predicateForSamples(withStart: start, end: nil)
+    }
+
+    private func shortName(for type: HKSampleType) -> String {
+        let id = type.identifier
+        for prefix in ["HKQuantityTypeIdentifier", "HKCategoryTypeIdentifier",
+                        "HKDataTypeIdentifier", "HKCorrelationTypeIdentifier"] {
+            if id.hasPrefix(prefix) { return String(id.dropFirst(prefix.count)) }
         }
-        return queued
+        if id == "HKWorkoutTypeIdentifier" { return "Workout" }
+        return id
     }
 
     private func payloadFragment(for sample: HKSample) async -> BatchPayload? {
@@ -865,6 +870,7 @@ final class HealthKitManager: ObservableObject, @unchecked Sendable {
             let unit = preferredUnit(for: qty.quantityType)
             let value = qty.quantity.doubleValue(for: unit)
             payload.records.append(HealthRecord(
+                sampleUUID: qty.uuid.uuidString,
                 recordType: qty.quantityType.identifier,
                 value: value,
                 unit: unit.unitString,
@@ -879,6 +885,7 @@ final class HealthKitManager: ObservableObject, @unchecked Sendable {
 
         if let cat = sample as? HKCategorySample {
             payload.records.append(HealthRecord(
+                sampleUUID: cat.uuid.uuidString,
                 recordType: cat.categoryType.identifier,
                 value: Double(cat.value),
                 unit: nil,
@@ -893,6 +900,7 @@ final class HealthKitManager: ObservableObject, @unchecked Sendable {
 
         if let workout = sample as? HKWorkout {
             payload.workouts.append(WorkoutRecord(
+                sampleUUID: workout.uuid.uuidString,
                 workoutType: workout.workoutActivityType.name,
                 startDate: isoFormatter.string(from: workout.startDate),
                 endDate: isoFormatter.string(from: workout.endDate),
@@ -1323,60 +1331,6 @@ final class HealthKitManager: ObservableObject, @unchecked Sendable {
         return formatter.string(from: date)
     }
 
-    // MARK: - Activity summaries
-
-    func syncActivitySummaries() async -> Bool {
-        let cal = Calendar.current
-        // Fetch last 2 years
-        let start = cal.date(byAdding: .year, value: -2, to: Date())!
-        let startComponents = cal.dateComponents([.day, .month, .year], from: start)
-        let endComponents = cal.dateComponents([.day, .month, .year], from: Date())
-        let predicate = HKQuery.predicate(forActivitySummariesBetweenStart: startComponents, end: endComponents)
-        let healthStore = store
-
-        let summaries: [HKActivitySummary]? = await withCheckedContinuation { continuation in
-            let query = HKActivitySummaryQuery(predicate: predicate) { _, summaries, error in
-                if let error {
-                    print("[HealthKitManager] Activity summary query failed: \(error.localizedDescription)")
-                    continuation.resume(returning: nil)
-                    return
-                }
-
-                continuation.resume(returning: summaries ?? [])
-            }
-            healthStore.execute(query)
-        }
-
-        guard let summaries else {
-            return false
-        }
-
-        var payload = BatchPayload()
-        for summary in summaries {
-            guard let date = cal.date(from: summary.dateComponents(for: cal)) else { continue }
-            let dateStr = isoFormatter.string(from: date)
-            payload.activitySummaries.append(ActivitySummaryRecord(
-                date: dateStr,
-                activeEnergyBurned: summary.activeEnergyBurned.doubleValue(for: .kilocalorie()),
-                activeEnergyBurnedGoal: summary.activeEnergyBurnedGoal.doubleValue(for: .kilocalorie()),
-                appleMoveTime: summary.appleMoveTime.doubleValue(for: .minute()),
-                appleMoveTimeGoal: summary.appleMoveTimeGoal.doubleValue(for: .minute()),
-                appleExerciseTime: summary.appleExerciseTime.doubleValue(for: .minute()),
-                appleExerciseTimeGoal: summary.appleExerciseTimeGoal.doubleValue(for: .minute()),
-                appleStandHours: summary.appleStandHours.doubleValue(for: .count()),
-                appleStandHoursGoal: summary.appleStandHoursGoal.doubleValue(for: .count())
-            ))
-        }
-
-        do {
-            try await PendingUploadQueue.shared.enqueue(payload: payload, source: "activity_summaries")
-            return true
-        } catch {
-            print("[HealthKitManager] Activity summary queue failed: \(error)")
-            return false
-        }
-    }
-
     // MARK: - Anchor persistence
 
     private func loadAnchor(for key: String) -> HKQueryAnchor? {
@@ -1385,7 +1339,7 @@ final class HealthKitManager: ObservableObject, @unchecked Sendable {
     }
 
     private func saveAnchor(_ anchor: HKQueryAnchor?, for key: String) {
-        guard let anchor = anchor,
+        guard let anchor,
               let data = try? NSKeyedArchiver.archivedData(withRootObject: anchor, requiringSecureCoding: true)
         else { return }
         UserDefaults.standard.set(data, forKey: "\(anchorsKey)_\(key)")
@@ -1398,59 +1352,6 @@ final class HealthKitManager: ObservableObject, @unchecked Sendable {
             if qt == type { return unit }
         }
         return .count()
-    }
-
-    func requestQueueFlush(reason: String) async -> Bool {
-        let (task, token) = makeOrReuseFlushTask(reason: reason)
-        let result = await task.value
-        clearFlushTaskIfCurrent(token)
-        return result
-    }
-
-    private func makeOrReuseFlushTask(reason: String) -> (Task<Bool, Never>, UUID) {
-        flushTaskLock.lock()
-        defer { flushTaskLock.unlock() }
-
-        if let existingTask = pendingFlushTask {
-            return (existingTask, pendingFlushToken ?? UUID())
-        }
-
-        let token = UUID()
-        let task = Task { [reason] in
-            let pendingCount = await PendingUploadQueue.shared.pendingCount()
-            guard pendingCount > 0 else {
-                return true
-            }
-
-            print("[HealthKitManager] Flushing \(pendingCount) queued uploads (\(reason))")
-            do {
-                _ = try await PendingUploadQueue.shared.flush { item in
-                    switch await ServerClient.shared.postBatch(item.payload) {
-                    case .skipped, .success:
-                        return true
-                    case .failure(let message):
-                        print("[HealthKitManager] Flush failed for \(item.source): \(message)")
-                        return false
-                    }
-                }
-                return true
-            } catch {
-                print("[HealthKitManager] Queue flush persistence failed (\(reason)): \(error)")
-                return false
-            }
-        }
-        pendingFlushTask = task
-        pendingFlushToken = token
-        return (task, token)
-    }
-
-    private func clearFlushTaskIfCurrent(_ token: UUID) {
-        flushTaskLock.lock()
-        if pendingFlushToken == token {
-            pendingFlushTask = nil
-            pendingFlushToken = nil
-        }
-        flushTaskLock.unlock()
     }
 }
 
