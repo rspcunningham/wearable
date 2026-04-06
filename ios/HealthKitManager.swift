@@ -51,30 +51,6 @@ struct WorkoutRecord: Codable {
     }
 }
 
-struct ActivitySummaryRecord: Codable {
-    let date: String
-    let activeEnergyBurned: Double?
-    let activeEnergyBurnedGoal: Double?
-    let appleMoveTime: Double?
-    let appleMoveTimeGoal: Double?
-    let appleExerciseTime: Double?
-    let appleExerciseTimeGoal: Double?
-    let appleStandHours: Double?
-    let appleStandHoursGoal: Double?
-
-    enum CodingKeys: String, CodingKey {
-        case date
-        case activeEnergyBurned = "active_energy_burned"
-        case activeEnergyBurnedGoal = "active_energy_burned_goal"
-        case appleMoveTime = "apple_move_time"
-        case appleMoveTimeGoal = "apple_move_time_goal"
-        case appleExerciseTime = "apple_exercise_time"
-        case appleExerciseTimeGoal = "apple_exercise_time_goal"
-        case appleStandHours = "apple_stand_hours"
-        case appleStandHoursGoal = "apple_stand_hours_goal"
-    }
-}
-
 struct ProfileSnapshotRecord: Codable {
     let capturedAt: String
     let dateOfBirth: String?
@@ -284,136 +260,73 @@ struct StateOfMindRecord: Codable {
     }
 }
 
-struct CorrelationObjectRecord: Codable {
-    let sampleUUID: String
-    let recordType: String
-    let value: Double?
-    let unit: String?
-    let startDate: String
-    let endDate: String?
-    let metadata: [String: String]?
-
-    enum CodingKeys: String, CodingKey {
-        case sampleUUID = "sample_uuid"
-        case recordType = "record_type"
-        case value, unit
-        case startDate = "start_date"
-        case endDate = "end_date"
-        case metadata
-    }
-}
-
-struct CorrelationRecord: Codable {
-    let sampleUUID: String
-    let correlationType: String
-    let startDate: String
-    let endDate: String?
-    let device: String?
-    let sourceName: String?
-    let objects: [CorrelationObjectRecord]
-    let metadata: [String: String]?
-
-    enum CodingKeys: String, CodingKey {
-        case sampleUUID = "sample_uuid"
-        case correlationType = "correlation_type"
-        case startDate = "start_date"
-        case endDate = "end_date"
-        case device
-        case sourceName = "source_name"
-        case objects
-        case metadata
-    }
-}
-
 struct BatchPayload: Codable {
     var records: [HealthRecord] = []
     var workouts: [WorkoutRecord] = []
-    var activitySummaries: [ActivitySummaryRecord] = []
     var profileSnapshots: [ProfileSnapshotRecord] = []
     var electrocardiograms: [ElectrocardiogramRecord] = []
     var workoutRoutes: [WorkoutRouteRecord] = []
     var heartbeatSeries: [HeartbeatSeriesRecord] = []
     var audiograms: [AudiogramRecord] = []
     var stateOfMind: [StateOfMindRecord] = []
-    var correlations: [CorrelationRecord] = []
 
     enum CodingKeys: String, CodingKey {
         case records, workouts
-        case activitySummaries = "activity_summaries"
         case profileSnapshots = "profile_snapshots"
         case electrocardiograms
         case workoutRoutes = "workout_routes"
         case heartbeatSeries = "heartbeat_series"
         case audiograms
         case stateOfMind = "state_of_mind"
-        case correlations
     }
 
     var isEmpty: Bool {
         records.isEmpty &&
         workouts.isEmpty &&
-        activitySummaries.isEmpty &&
         profileSnapshots.isEmpty &&
         electrocardiograms.isEmpty &&
         workoutRoutes.isEmpty &&
         heartbeatSeries.isEmpty &&
         audiograms.isEmpty &&
-        stateOfMind.isEmpty &&
-        correlations.isEmpty
+        stateOfMind.isEmpty
     }
 
     mutating func merge(_ other: BatchPayload) {
         records += other.records
         workouts += other.workouts
-        activitySummaries += other.activitySummaries
         profileSnapshots += other.profileSnapshots
         electrocardiograms += other.electrocardiograms
         workoutRoutes += other.workoutRoutes
         heartbeatSeries += other.heartbeatSeries
         audiograms += other.audiograms
         stateOfMind += other.stateOfMind
-        correlations += other.correlations
+    }
+
+    var sampleCount: Int {
+        records.count +
+        workouts.count +
+        profileSnapshots.count +
+        electrocardiograms.count +
+        workoutRoutes.count +
+        heartbeatSeries.count +
+        audiograms.count +
+        stateOfMind.count
     }
 }
 
-// MARK: - HealthKit Manager
+// MARK: - HealthKit type lists and serialization (stateless)
 
-final class HealthKitManager: ObservableObject, @unchecked Sendable {
+enum HKSync {
 
-    static let shared = HealthKitManager()
-
-    let store = HKHealthStore()
-    private let isoFormatter: ISO8601DateFormatter = {
+    static let isoFormatter: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return f
     }()
 
-    private let anchorsKey = "hk_anchors_v2"
-    private let syncHistoryDays = 7  // TODO: remove limit for full historical sync
-
-    @Published var lastSyncDate: Date?
-    @Published var syncStatus: String = "Idle"
-    @Published var logMessages: [String] = []
-
-    func log(_ msg: String) {
-        let ts = Self.timeFormatter.string(from: Date())
-        let line = "[\(ts)] \(msg)"
-        print(line)
-        Task { @MainActor in
-            logMessages.append(line)
-        }
-    }
-
-    private static let timeFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "HH:mm:ss"
-        return f
-    }()
-
     // MARK: All quantity types we want to track
 
-    var allQuantityTypes: [(HKQuantityType, HKUnit)] {
+    static var allQuantityTypes: [(HKQuantityType, HKUnit)] {
         var types: [(HKQuantityType, HKUnit)] = []
 
         let add: (HKQuantityTypeIdentifier, HKUnit) -> Void = { id, unit in
@@ -570,7 +483,7 @@ final class HealthKitManager: ObservableObject, @unchecked Sendable {
         return types
     }
 
-    var allCategoryTypes: [HKCategoryType] {
+    static var allCategoryTypes: [HKCategoryType] {
         var ids: [HKCategoryTypeIdentifier] = [
             .sleepAnalysis,
             .appleStandHour,
@@ -648,14 +561,7 @@ final class HealthKitManager: ObservableObject, @unchecked Sendable {
         return ids.compactMap { HKCategoryType.categoryType(forIdentifier: $0) }
     }
 
-    var allCorrelationTypes: [HKCorrelationType] {
-        [
-            HKCorrelationType.correlationType(forIdentifier: .bloodPressure),
-            HKCorrelationType.correlationType(forIdentifier: .food),
-        ].compactMap { $0 }
-    }
-
-    var allAdditionalSampleTypes: [HKSampleType] {
+    static var allAdditionalSampleTypes: [HKSampleType] {
         [
             HKWorkoutType.workoutType(),
             HKSeriesType.workoutRoute(),
@@ -666,7 +572,7 @@ final class HealthKitManager: ObservableObject, @unchecked Sendable {
         ]
     }
 
-    var allCharacteristicTypes: [HKCharacteristicType] {
+    static var allCharacteristicTypes: [HKCharacteristicType] {
         let ids: [HKCharacteristicTypeIdentifier] = [
             .dateOfBirth,
             .biologicalSex,
@@ -679,195 +585,33 @@ final class HealthKitManager: ObservableObject, @unchecked Sendable {
         return ids.compactMap { HKCharacteristicType.characteristicType(forIdentifier: $0) }
     }
 
-    var allSampleTypes: [HKSampleType] {
+    static var allSampleTypes: [HKSampleType] {
         allQuantityTypes.map(\.0) +
         allCategoryTypes +
-        allCorrelationTypes +
         allAdditionalSampleTypes
     }
 
     // MARK: All read types for permissions request
 
-    var allReadTypes: Set<HKObjectType> {
+    static var allReadTypes: Set<HKObjectType> {
         var types = Set<HKObjectType>()
-        for sampleType in allSampleTypes { types.insert(sampleType) }
+        for sampleType in allSampleTypes {
+            types.insert(sampleType)
+        }
         for characteristicType in allCharacteristicTypes { types.insert(characteristicType) }
-        types.insert(HKObjectType.activitySummaryType())
         return types
     }
 
-    // MARK: - Auth
+    // MARK: - Serialization
 
-    func requestAuthorization() async throws {
-        try await store.requestAuthorization(toShare: [], read: allReadTypes)
-    }
-
-    // MARK: - Sync engine
-
-    func syncAll() async {
-        logMessages = []
-        let types = allSampleTypes
-        log("Starting sync: \(types.count) types, last \(syncHistoryDays) days")
-
-        // Preflight: verify server is reachable and API key works
-        log("Preflight: testing server connection...")
-        let preflightOk = await postDirectly(BatchPayload())
-        if !preflightOk {
-            syncStatus = "Server unreachable"
-            log("ERROR: Preflight failed — check URL and API key")
-            return
-        }
-        log("Preflight OK")
-
-        await syncProfileSnapshot()
-
-        var succeeded = 0
-        var failed = 0
-        var skipped = 0
-
-        for (index, type) in types.enumerated() {
-            let name = shortName(for: type)
-            syncStatus = "Syncing \(index + 1)/\(types.count): \(name)..."
-
-            let result = await syncType(type)
-            switch result {
-            case .uploaded(let count):
-                succeeded += 1
-                log("\(name): OK (\(count) samples)")
-            case .empty:
-                skipped += 1
-            case .failed(let reason):
-                failed += 1
-                log("\(name): ERROR — \(reason)")
-            }
-        }
-
-        log("Done: \(succeeded) uploaded, \(skipped) empty, \(failed) failed")
-        if failed == 0 {
-            syncStatus = "Up to date"
-            lastSyncDate = Date()
-        } else {
-            syncStatus = "Done (\(failed) failed)"
-        }
-    }
-
-    private enum SyncResult {
-        case uploaded(Int)
-        case empty
-        case failed(String)
-    }
-
-    private func syncType(_ type: HKSampleType) async -> SyncResult {
-        let batchSize = isComplexType(type) ? 50 : 500
-        var anchor = loadAnchor(for: type.identifier)
-        let predicate = datePredicate(lastDays: syncHistoryDays)
-        var totalUploaded = 0
-
-        while true {
-            let result = await fetchBatch(type: type, predicate: predicate, anchor: anchor, limit: batchSize)
-            guard let result else { return .failed("HealthKit query error") }
-
-            guard !result.samples.isEmpty else {
-                saveAnchor(result.newAnchor, for: type.identifier)
-                return totalUploaded > 0 ? .uploaded(totalUploaded) : .empty
-            }
-
-            var payload = BatchPayload()
-            for sample in result.samples {
-                if let fragment = await payloadFragment(for: sample) {
-                    payload.merge(fragment)
-                }
-            }
-
-            if payload.isEmpty {
-                saveAnchor(result.newAnchor, for: type.identifier)
-                anchor = result.newAnchor
-                continue
-            }
-
-            guard await postDirectly(payload) else {
-                return .failed("POST failed after \(totalUploaded) samples")
-            }
-
-            totalUploaded += result.samples.count
-            saveAnchor(result.newAnchor, for: type.identifier)
-            anchor = result.newAnchor
-        }
-    }
-
-    private func fetchBatch(
-        type: HKSampleType,
-        predicate: NSPredicate?,
-        anchor: HKQueryAnchor?,
-        limit: Int
-    ) async -> (samples: [HKSample], newAnchor: HKQueryAnchor?)? {
-        let healthStore = store
-
-        return await withCheckedContinuation { continuation in
-            let query = HKAnchoredObjectQuery(
-                type: type,
-                predicate: predicate,
-                anchor: anchor,
-                limit: limit
-            ) { _, samples, _, newAnchor, error in
-                if let error {
-                    print("[Sync] Query error for \(type.identifier): \(error.localizedDescription)")
-                    continuation.resume(returning: nil)
-                    return
-                }
-                continuation.resume(returning: (samples: samples ?? [], newAnchor: newAnchor))
-            }
-            healthStore.execute(query)
-        }
-    }
-
-    private func postDirectly(_ payload: BatchPayload) async -> Bool {
-        switch await ServerClient.shared.postBatch(payload) {
-        case .skipped, .success:
-            return true
-        case .failure(let message):
-            log("ERROR: POST failed — \(message)")
-            return false
-        }
-    }
-
-    private func syncProfileSnapshot() async {
-        var payload = BatchPayload()
-        payload.profileSnapshots = [buildProfileSnapshot()]
-        if await postDirectly(payload) {
-            log("Profile snapshot: OK")
-        }
-    }
-
-    private func isComplexType(_ type: HKSampleType) -> Bool {
-        type == HKObjectType.electrocardiogramType() ||
-        type == HKSeriesType.workoutRoute() ||
-        type == HKSeriesType.heartbeat()
-    }
-
-    private func datePredicate(lastDays: Int) -> NSPredicate {
-        let start = Calendar.current.date(byAdding: .day, value: -lastDays, to: Date())!
-        return HKQuery.predicateForSamples(withStart: start, end: nil)
-    }
-
-    private func shortName(for type: HKSampleType) -> String {
-        let id = type.identifier
-        for prefix in ["HKQuantityTypeIdentifier", "HKCategoryTypeIdentifier",
-                        "HKDataTypeIdentifier", "HKCorrelationTypeIdentifier"] {
-            if id.hasPrefix(prefix) { return String(id.dropFirst(prefix.count)) }
-        }
-        if id == "HKWorkoutTypeIdentifier" { return "Workout" }
-        return id
-    }
-
-    private func payloadFragment(for sample: HKSample) async -> BatchPayload? {
+    static func serialize(_ sample: HKSample, store: HKHealthStore) async -> BatchPayload? {
         let device = sample.device?.name
         let source = sample.sourceRevision.source.name
         let metadata = metadataStrings(from: sample.metadata)
         var payload = BatchPayload()
 
         if let qty = sample as? HKQuantitySample {
-            let unit = preferredUnit(for: qty.quantityType)
+            let unit = Self.preferredUnit(for: qty.quantityType)
             let value = qty.quantity.doubleValue(for: unit)
             payload.records.append(HealthRecord(
                 sampleUUID: qty.uuid.uuidString,
@@ -914,7 +658,7 @@ final class HealthKitManager: ObservableObject, @unchecked Sendable {
         }
 
         if let electrocardiogram = sample as? HKElectrocardiogram {
-            guard let voltageMeasurements = await fetchElectrocardiogramMeasurements(for: electrocardiogram) else {
+            guard let voltageMeasurements = await Self.fetchElectrocardiogramMeasurements(for: electrocardiogram, store: store) else {
                 return nil
             }
             payload.electrocardiograms.append(ElectrocardiogramRecord(
@@ -935,7 +679,7 @@ final class HealthKitManager: ObservableObject, @unchecked Sendable {
         }
 
         if let workoutRoute = sample as? HKWorkoutRoute {
-            guard let locations = await fetchWorkoutRouteLocations(for: workoutRoute) else {
+            guard let locations = await Self.fetchWorkoutRouteLocations(for: workoutRoute, store: store) else {
                 return nil
             }
             payload.workoutRoutes.append(WorkoutRouteRecord(
@@ -951,7 +695,7 @@ final class HealthKitManager: ObservableObject, @unchecked Sendable {
         }
 
         if let heartbeatSeries = sample as? HKHeartbeatSeriesSample {
-            guard let beats = await fetchHeartbeatSeriesBeats(for: heartbeatSeries) else {
+            guard let beats = await Self.fetchHeartbeatSeriesBeats(for: heartbeatSeries, store: store) else {
                 return nil
             }
             payload.heartbeatSeries.append(HeartbeatSeriesRecord(
@@ -996,74 +740,12 @@ final class HealthKitManager: ObservableObject, @unchecked Sendable {
             return payload
         }
 
-        if let correlation = sample as? HKCorrelation {
-            guard let serialized = serializeCorrelation(correlation, device: device, source: source, metadata: metadata) else {
-                return nil
-            }
-            payload.correlations.append(serialized)
-            return payload
-        }
-
-        print("[HealthKitManager] Unsupported sample type encountered: \(sample.sampleType.identifier)")
         return nil
     }
 
-    private func serializeCorrelation(
-        _ correlation: HKCorrelation,
-        device: String?,
-        source: String,
-        metadata: [String: String]?
-    ) -> CorrelationRecord? {
-        let objects = correlation.objects.compactMap(serializeCorrelationObject)
-        guard objects.count == correlation.objects.count else {
-            return nil
-        }
-
-        return CorrelationRecord(
-            sampleUUID: correlation.uuid.uuidString,
-            correlationType: correlation.correlationType.identifier,
-            startDate: isoFormatter.string(from: correlation.startDate),
-            endDate: isoFormatter.string(from: correlation.endDate),
-            device: device,
-            sourceName: source,
-            objects: objects,
-            metadata: metadata
-        )
-    }
-
-    private func serializeCorrelationObject(_ sample: HKSample) -> CorrelationObjectRecord? {
-        let metadata = metadataStrings(from: sample.metadata)
-
-        if let quantitySample = sample as? HKQuantitySample {
-            let unit = preferredUnit(for: quantitySample.quantityType)
-            return CorrelationObjectRecord(
-                sampleUUID: quantitySample.uuid.uuidString,
-                recordType: quantitySample.quantityType.identifier,
-                value: quantitySample.quantity.doubleValue(for: unit),
-                unit: unit.unitString,
-                startDate: isoFormatter.string(from: quantitySample.startDate),
-                endDate: isoFormatter.string(from: quantitySample.endDate),
-                metadata: metadata
-            )
-        }
-
-        if let categorySample = sample as? HKCategorySample {
-            return CorrelationObjectRecord(
-                sampleUUID: categorySample.uuid.uuidString,
-                recordType: categorySample.categoryType.identifier,
-                value: Double(categorySample.value),
-                unit: nil,
-                startDate: isoFormatter.string(from: categorySample.startDate),
-                endDate: isoFormatter.string(from: categorySample.endDate),
-                metadata: metadata
-            )
-        }
-
-        return nil
-    }
-
-    private func fetchElectrocardiogramMeasurements(
-        for electrocardiogram: HKElectrocardiogram
+    private static func fetchElectrocardiogramMeasurements(
+        for electrocardiogram: HKElectrocardiogram,
+        store: HKHealthStore
     ) async -> [ElectrocardiogramVoltageMeasurementRecord]? {
         let healthStore = store
 
@@ -1102,8 +784,9 @@ final class HealthKitManager: ObservableObject, @unchecked Sendable {
         }
     }
 
-    private func fetchWorkoutRouteLocations(
-        for workoutRoute: HKWorkoutRoute
+    private static func fetchWorkoutRouteLocations(
+        for workoutRoute: HKWorkoutRoute,
+        store: HKHealthStore
     ) async -> [WorkoutRouteLocationRecord]? {
         let healthStore = store
 
@@ -1145,8 +828,9 @@ final class HealthKitManager: ObservableObject, @unchecked Sendable {
         }
     }
 
-    private func fetchHeartbeatSeriesBeats(
-        for heartbeatSeries: HKHeartbeatSeriesSample
+    private static func fetchHeartbeatSeriesBeats(
+        for heartbeatSeries: HKHeartbeatSeriesSample,
+        store: HKHealthStore
     ) async -> [HeartbeatSeriesBeatRecord]? {
         let healthStore = store
 
@@ -1182,7 +866,7 @@ final class HealthKitManager: ObservableObject, @unchecked Sendable {
         }
     }
 
-    private func serializeSensitivityPoints(from audiogram: HKAudiogramSample) -> [AudiogramSensitivityPointRecord] {
+    private static func serializeSensitivityPoints(from audiogram: HKAudiogramSample) -> [AudiogramSensitivityPointRecord] {
         audiogram.sensitivityPoints.map { point in
             let tests: [AudiogramSensitivityTestRecord]
             let leftEarSensitivity: Double?
@@ -1216,7 +900,7 @@ final class HealthKitManager: ObservableObject, @unchecked Sendable {
         }
     }
 
-    private func metadataStrings(from metadata: [String: Any]?) -> [String: String]? {
+    private static func metadataStrings(from metadata: [String: Any]?) -> [String: String]? {
         guard let metadata, !metadata.isEmpty else { return nil }
 
         var serialized: [String: String] = [:]
@@ -1230,66 +914,7 @@ final class HealthKitManager: ObservableObject, @unchecked Sendable {
         return serialized.isEmpty ? nil : serialized
     }
 
-    private func buildProfileSnapshot() -> ProfileSnapshotRecord {
-        var errors: [String: String] = [:]
-
-        let dateOfBirthComponents = tryCharacteristic("date_of_birth", errors: &errors) {
-            try store.dateOfBirthComponents()
-        }
-        let biologicalSex = tryCharacteristic("biological_sex", errors: &errors) {
-            try store.biologicalSex()
-        }
-        let bloodType = tryCharacteristic("blood_type", errors: &errors) {
-            try store.bloodType()
-        }
-        let fitzpatrickSkinType = tryCharacteristic("fitzpatrick_skin_type", errors: &errors) {
-            try store.fitzpatrickSkinType()
-        }
-        let wheelchairUse = tryCharacteristic("wheelchair_use", errors: &errors) {
-            try store.wheelchairUse()
-        }
-        let activityMoveMode = tryCharacteristic("activity_move_mode", errors: &errors) {
-            try store.activityMoveMode()
-        }
-
-        return ProfileSnapshotRecord(
-            capturedAt: isoFormatter.string(from: Date()),
-            dateOfBirth: dateString(from: dateOfBirthComponents),
-            biologicalSexCode: biologicalSex?.biologicalSex.rawValue,
-            bloodTypeCode: bloodType?.bloodType.rawValue,
-            fitzpatrickSkinTypeCode: fitzpatrickSkinType?.skinType.rawValue,
-            wheelchairUseCode: wheelchairUse?.wheelchairUse.rawValue,
-            activityMoveModeCode: activityMoveMode?.activityMoveMode.rawValue,
-            errors: errors.isEmpty ? nil : errors
-        )
-    }
-
-    private func tryCharacteristic<T>(
-        _ key: String,
-        errors: inout [String: String],
-        read: () throws -> T
-    ) -> T? {
-        do {
-            return try read()
-        } catch {
-            errors[key] = error.localizedDescription
-            return nil
-        }
-    }
-
-    private func dateString(from components: DateComponents?) -> String? {
-        guard let components else { return nil }
-
-        let year = components.year.map(String.init)
-        let month = components.month.map { String(format: "%02d", $0) }
-        let day = components.day.map { String(format: "%02d", $0) }
-
-        return [year, month, day].compactMap { $0 }.isEmpty
-            ? nil
-            : [year, month, day].compactMap { $0 }.joined(separator: "-")
-    }
-
-    private func workoutQuantitySum(
+    private static func workoutQuantitySum(
         for identifier: HKQuantityTypeIdentifier,
         in workout: HKWorkout,
         unit: HKUnit
@@ -1303,7 +928,7 @@ final class HealthKitManager: ObservableObject, @unchecked Sendable {
         return quantity.doubleValue(for: unit)
     }
 
-    private func workoutTotalDistance(for workout: HKWorkout) -> Double? {
+    private static func workoutTotalDistance(for workout: HKWorkout) -> Double? {
         let candidateTypes: [HKQuantityTypeIdentifier] = [
             .distanceWalkingRunning,
             .distanceCycling,
@@ -1331,23 +956,9 @@ final class HealthKitManager: ObservableObject, @unchecked Sendable {
         return formatter.string(from: date)
     }
 
-    // MARK: - Anchor persistence
-
-    private func loadAnchor(for key: String) -> HKQueryAnchor? {
-        guard let data = UserDefaults.standard.data(forKey: "\(anchorsKey)_\(key)") else { return nil }
-        return try? NSKeyedUnarchiver.unarchivedObject(ofClass: HKQueryAnchor.self, from: data)
-    }
-
-    private func saveAnchor(_ anchor: HKQueryAnchor?, for key: String) {
-        guard let anchor,
-              let data = try? NSKeyedArchiver.archivedData(withRootObject: anchor, requiringSecureCoding: true)
-        else { return }
-        UserDefaults.standard.set(data, forKey: "\(anchorsKey)_\(key)")
-    }
-
     // MARK: - Unit helpers
 
-    private func preferredUnit(for type: HKQuantityType) -> HKUnit {
+    static func preferredUnit(for type: HKQuantityType) -> HKUnit {
         for (qt, unit) in allQuantityTypes {
             if qt == type { return unit }
         }
