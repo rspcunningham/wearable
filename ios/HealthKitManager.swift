@@ -1,6 +1,6 @@
 import HealthKit
 import Foundation
-import CoreLocation
+
 
 // MARK: - Data Models (mirror server's Pydantic models)
 
@@ -48,28 +48,6 @@ struct WorkoutRecord: Codable {
         case totalDistance = "total_distance"
         case sourceName = "source_name"
         case metadata
-    }
-}
-
-struct ProfileSnapshotRecord: Codable {
-    let capturedAt: String
-    let dateOfBirth: String?
-    let biologicalSexCode: Int?
-    let bloodTypeCode: Int?
-    let fitzpatrickSkinTypeCode: Int?
-    let wheelchairUseCode: Int?
-    let activityMoveModeCode: Int?
-    let errors: [String: String]?
-
-    enum CodingKeys: String, CodingKey {
-        case capturedAt = "captured_at"
-        case dateOfBirth = "date_of_birth"
-        case biologicalSexCode = "biological_sex_code"
-        case bloodTypeCode = "blood_type_code"
-        case fitzpatrickSkinTypeCode = "fitzpatrick_skin_type_code"
-        case wheelchairUseCode = "wheelchair_use_code"
-        case activityMoveModeCode = "activity_move_mode_code"
-        case errors
     }
 }
 
@@ -263,7 +241,6 @@ struct StateOfMindRecord: Codable {
 struct BatchPayload: Codable {
     var records: [HealthRecord] = []
     var workouts: [WorkoutRecord] = []
-    var profileSnapshots: [ProfileSnapshotRecord] = []
     var electrocardiograms: [ElectrocardiogramRecord] = []
     var workoutRoutes: [WorkoutRouteRecord] = []
     var heartbeatSeries: [HeartbeatSeriesRecord] = []
@@ -272,7 +249,6 @@ struct BatchPayload: Codable {
 
     enum CodingKeys: String, CodingKey {
         case records, workouts
-        case profileSnapshots = "profile_snapshots"
         case electrocardiograms
         case workoutRoutes = "workout_routes"
         case heartbeatSeries = "heartbeat_series"
@@ -283,7 +259,6 @@ struct BatchPayload: Codable {
     var isEmpty: Bool {
         records.isEmpty &&
         workouts.isEmpty &&
-        profileSnapshots.isEmpty &&
         electrocardiograms.isEmpty &&
         workoutRoutes.isEmpty &&
         heartbeatSeries.isEmpty &&
@@ -305,7 +280,6 @@ struct BatchPayload: Codable {
     var sampleCount: Int {
         records.count +
         workouts.count +
-        profileSnapshots.count +
         electrocardiograms.count +
         workoutRoutes.count +
         heartbeatSeries.count +
