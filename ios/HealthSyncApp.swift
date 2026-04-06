@@ -1621,7 +1621,6 @@ struct AppView: View {
     private static let orderedServerTables = [
         "health_records",
         "workouts",
-        "users",
         "electrocardiograms",
         "workout_routes",
         "heartbeat_series",
@@ -1635,8 +1634,6 @@ struct AppView: View {
             return "Records"
         case "workouts":
             return "Workouts"
-        case "users":
-            return "Users"
         case "electrocardiograms":
             return "ECGs"
         case "workout_routes":

@@ -838,14 +838,11 @@ def health():
 INFO_TABLES = [
     "health_records",
     "workouts",
-    "activity_summaries",
-    "users",
     "electrocardiograms",
     "workout_routes",
     "heartbeat_series",
     "audiograms",
     "state_of_mind_records",
-    "correlations",
 ]
 
 
