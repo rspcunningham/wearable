@@ -1539,14 +1539,12 @@ struct AppView: View {
     private static let orderedServerTables = [
         "health_records",
         "workouts",
-        "activity_summaries",
         "profile_snapshots",
         "electrocardiograms",
         "workout_routes",
         "heartbeat_series",
         "audiograms",
         "state_of_mind_records",
-        "correlations",
     ]
 
     private static func displayName(forServerTable tableName: String) -> String {
@@ -1555,8 +1553,6 @@ struct AppView: View {
             return "Records"
         case "workouts":
             return "Workouts"
-        case "activity_summaries":
-            return "Activity Summaries"
         case "profile_snapshots":
             return "Profile Snapshots"
         case "electrocardiograms":
@@ -1569,8 +1565,6 @@ struct AppView: View {
             return "Audiograms"
         case "state_of_mind_records":
             return "State of Mind"
-        case "correlations":
-            return "Correlations"
         default:
             return tableName
         }
