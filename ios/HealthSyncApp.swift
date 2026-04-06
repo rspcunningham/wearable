@@ -80,14 +80,15 @@ final class SyncUIModel: ObservableObject {
     @Published var lastServerInfoRefreshAt: Date?
     @Published var serverInfo: ServerInfoSnapshot?
 
+    private let maxLogLines = 500
+
     private init() {}
 
     func append(_ line: String) {
         lines.append(line)
-    }
-
-    func clearLogs() {
-        lines.removeAll()
+        if lines.count > maxLogLines {
+            lines.removeFirst(lines.count - maxLogLines)
+        }
     }
 
     func setRunning(_ running: Bool) {
@@ -1450,7 +1451,21 @@ struct AppView: View {
     }
 
     var body: some View {
-        ScrollViewReader { proxy in
+        TabView {
+            dashboardTab
+                .tabItem { Label("Dashboard", systemImage: "heart.text.square") }
+
+            logsTab
+                .tabItem { Label("Logs", systemImage: "text.justify.left") }
+        }
+        .task {
+            await SyncCoordinator.shared.refreshDisplayedState()
+            await ServerInfoCoordinator.shared.refresh()
+        }
+    }
+
+    private var dashboardTab: some View {
+        ScrollView {
             VStack(spacing: 16) {
                 Text("Health Sync").font(.headline)
 
@@ -1460,20 +1475,6 @@ struct AppView: View {
                     InfoCardView(title: "Last Run", rows: lastRunRows)
                     InfoCardView(title: "Server", rows: serverRows)
                 }
-
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 4) {
-                        ForEach(Array(uiModel.lines.enumerated()), id: \.offset) { _, line in
-                            Text(line)
-                                .font(.system(.caption2, design: .monospaced))
-                        }
-
-                        Color.clear
-                            .frame(height: 1)
-                            .id("log-bottom")
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
 
                 HStack(spacing: 12) {
                     Button(syncButtonTitle) {
@@ -1495,11 +1496,6 @@ struct AppView: View {
                     .buttonStyle(.bordered)
                     .disabled(uiModel.isRefreshingServerInfo)
 
-                    Button("Clear Logs") {
-                        uiModel.clearLogs()
-                    }
-                    .buttonStyle(.bordered)
-
                     Button("Clear Anchors") {
                         guard !isBusy else { return }
                         Task {
@@ -1513,10 +1509,25 @@ struct AppView: View {
                 }
             }
             .padding()
-            .task {
-                await SyncCoordinator.shared.refreshDisplayedState()
-                await ServerInfoCoordinator.shared.refresh()
+        }
+    }
+
+    private var logsTab: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 4) {
+                    ForEach(Array(uiModel.lines.enumerated()), id: \.offset) { _, line in
+                        Text(line)
+                            .font(.system(.caption, design: .monospaced))
+                    }
+
+                    Color.clear
+                        .frame(height: 1)
+                        .id("log-bottom")
+                }
+                .padding()
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .onChange(of: uiModel.lines.count) { _, _ in
                 withAnimation(.easeOut(duration: 0.15)) {
                     proxy.scrollTo("log-bottom", anchor: .bottom)
