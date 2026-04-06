@@ -166,17 +166,16 @@ def init_db():
         )
         """,
         """
-        CREATE TABLE IF NOT EXISTS profile_snapshots (
-            snapshot_name TEXT PRIMARY KEY,
-            captured_at TIMESTAMPTZ NOT NULL,
+        CREATE TABLE IF NOT EXISTS users (
+            id BIGSERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
             date_of_birth DATE,
             biological_sex TEXT,
             blood_type TEXT,
             fitzpatrick_skin_type TEXT,
             wheelchair_use TEXT,
             activity_move_mode TEXT,
-            errors_json TEXT,
-            received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             updated_at TIMESTAMPTZ,
             update_count INTEGER NOT NULL DEFAULT 0
         )
@@ -357,15 +356,14 @@ class ActivitySummary(BaseModel):
     apple_stand_hours_goal: Optional[float] = None
 
 
-class ProfileSnapshotRecord(BaseModel):
-    captured_at: datetime
-    date_of_birth: Optional[str] = None  # "YYYY-MM-DD" or None
+class RegisterPayload(BaseModel):
+    name: str
+    date_of_birth: Optional[str] = None
     biological_sex_code: Optional[int] = None
     blood_type_code: Optional[int] = None
     fitzpatrick_skin_type_code: Optional[int] = None
     wheelchair_use_code: Optional[int] = None
     activity_move_mode_code: Optional[int] = None
-    errors: Optional[dict[str, str]] = None
 
 
 class ElectrocardiogramVoltageMeasurement(BaseModel):
@@ -489,7 +487,6 @@ class BatchPayload(BaseModel):
     records: list[HealthRecord] = Field(default_factory=list)
     workouts: list[Workout] = Field(default_factory=list)
     activity_summaries: list[ActivitySummary] = Field(default_factory=list)
-    profile_snapshots: list[ProfileSnapshotRecord] = Field(default_factory=list)
     electrocardiograms: list[ElectrocardiogramRecord] = Field(default_factory=list)
     workout_routes: list[WorkoutRouteRecord] = Field(default_factory=list)
     heartbeat_series: list[HeartbeatSeriesRecord] = Field(default_factory=list)
@@ -525,7 +522,6 @@ def ingest_batch(payload: BatchPayload):
         "records": len(payload.records),
         "workouts": len(payload.workouts),
         "activity_summaries": len(payload.activity_summaries),
-        "profile_snapshots": len(payload.profile_snapshots),
         "electrocardiograms": len(payload.electrocardiograms),
         "workout_routes": len(payload.workout_routes),
         "heartbeat_series": len(payload.heartbeat_series),
@@ -628,38 +624,6 @@ def _do_ingest(payload: BatchPayload):
                      s.apple_move_time, s.apple_move_time_goal, s.apple_exercise_time,
                      s.apple_exercise_time_goal, s.apple_stand_hours, s.apple_stand_hours_goal)
                     for s in payload.activity_summaries
-                ],
-            )
-
-        if payload.profile_snapshots:
-            cur.executemany(
-                """
-                INSERT INTO profile_snapshots
-                    (snapshot_name, captured_at, date_of_birth, biological_sex,
-                     blood_type, fitzpatrick_skin_type, wheelchair_use,
-                     activity_move_mode, errors_json)
-                VALUES ('default', %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (snapshot_name) DO UPDATE SET
-                    captured_at = EXCLUDED.captured_at,
-                    date_of_birth = EXCLUDED.date_of_birth,
-                    biological_sex = EXCLUDED.biological_sex,
-                    blood_type = EXCLUDED.blood_type,
-                    fitzpatrick_skin_type = EXCLUDED.fitzpatrick_skin_type,
-                    wheelchair_use = EXCLUDED.wheelchair_use,
-                    activity_move_mode = EXCLUDED.activity_move_mode,
-                    errors_json = EXCLUDED.errors_json,
-                    updated_at = NOW(),
-                    update_count = profile_snapshots.update_count + 1
-                """,
-                [
-                    (snapshot.captured_at, snapshot.date_of_birth,
-                     resolve_code(HK_BIOLOGICAL_SEX, snapshot.biological_sex_code),
-                     resolve_code(HK_BLOOD_TYPE, snapshot.blood_type_code),
-                     resolve_code(HK_FITZPATRICK_SKIN_TYPE, snapshot.fitzpatrick_skin_type_code),
-                     resolve_code(HK_WHEELCHAIR_USE, snapshot.wheelchair_use_code),
-                     resolve_code(HK_ACTIVITY_MOVE_MODE, snapshot.activity_move_mode_code),
-                     dump_json(snapshot.errors))
-                    for snapshot in payload.profile_snapshots
                 ],
             )
 
@@ -833,6 +797,39 @@ def _do_ingest(payload: BatchPayload):
 
 
 
+@app.post("/register", dependencies=[Depends(verify_api_key)])
+def register_user(payload: RegisterPayload):
+    """Register or update the user profile with HealthKit characteristics."""
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO users (id, name, date_of_birth, biological_sex, blood_type,
+                               fitzpatrick_skin_type, wheelchair_use, activity_move_mode)
+            VALUES (1, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (id) DO UPDATE SET
+                name = EXCLUDED.name,
+                date_of_birth = EXCLUDED.date_of_birth,
+                biological_sex = EXCLUDED.biological_sex,
+                blood_type = EXCLUDED.blood_type,
+                fitzpatrick_skin_type = EXCLUDED.fitzpatrick_skin_type,
+                wheelchair_use = EXCLUDED.wheelchair_use,
+                activity_move_mode = EXCLUDED.activity_move_mode,
+                updated_at = NOW()
+            """,
+            (payload.name,
+             payload.date_of_birth,
+             resolve_code(HK_BIOLOGICAL_SEX, payload.biological_sex_code),
+             resolve_code(HK_BLOOD_TYPE, payload.blood_type_code),
+             resolve_code(HK_FITZPATRICK_SKIN_TYPE, payload.fitzpatrick_skin_type_code),
+             resolve_code(HK_WHEELCHAIR_USE, payload.wheelchair_use_code),
+             resolve_code(HK_ACTIVITY_MOVE_MODE, payload.activity_move_mode_code)),
+        )
+        conn.commit()
+    logger.info(f"REGISTER: user '{payload.name}'")
+    return {"status": "ok"}
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "time": datetime.utcnow().isoformat()}
@@ -842,7 +839,7 @@ INFO_TABLES = [
     "health_records",
     "workouts",
     "activity_summaries",
-    "profile_snapshots",
+    "users",
     "electrocardiograms",
     "workout_routes",
     "heartbeat_series",

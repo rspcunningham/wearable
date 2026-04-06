@@ -196,10 +196,92 @@ final class HealthSyncAppDelegate: NSObject, UIApplicationDelegate {
 struct HealthSyncApp: App {
     @UIApplicationDelegateAdaptor(HealthSyncAppDelegate.self) private var appDelegate
     @StateObject private var uiModel = SyncUIModel.shared
+    @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
 
     var body: some Scene {
         WindowGroup {
-            AppView(uiModel: uiModel)
+            if hasCompletedOnboarding {
+                AppView(uiModel: uiModel)
+            } else {
+                OnboardingView(hasCompletedOnboarding: $hasCompletedOnboarding)
+            }
+        }
+    }
+}
+
+struct OnboardingView: View {
+    @Binding var hasCompletedOnboarding: Bool
+    @State private var name = ""
+    @State private var isSubmitting = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        VStack(spacing: 32) {
+            Spacer()
+
+            Text("Health Sync")
+                .font(.largeTitle.weight(.bold))
+
+            Text("What should we call you?")
+                .font(.title3)
+                .foregroundStyle(.secondary)
+
+            TextField("Your name", text: $name)
+                .textFieldStyle(.roundedBorder)
+                .textContentType(.name)
+                .autocorrectionDisabled()
+                .padding(.horizontal, 40)
+
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            Button(isSubmitting ? "Setting up..." : "Get Started") {
+                Task { await submit() }
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || isSubmitting)
+
+            Spacer()
+            Spacer()
+        }
+        .padding()
+    }
+
+    private func submit() async {
+        isSubmitting = true
+        errorMessage = nil
+
+        let store = HKHealthStore()
+        do {
+            try await store.requestAuthorization(toShare: [], read: HKSync.allReadTypes)
+        } catch {
+            errorMessage = "HealthKit authorization failed."
+            isSubmitting = false
+            return
+        }
+
+        let profile = HKSync.readCharacteristics(from: store)
+        let payload = RegisterPayload(
+            name: name.trimmingCharacters(in: .whitespaces),
+            dateOfBirth: profile.dateOfBirth,
+            biologicalSexCode: profile.biologicalSexCode,
+            bloodTypeCode: profile.bloodTypeCode,
+            fitzpatrickSkinTypeCode: profile.fitzpatrickSkinTypeCode,
+            wheelchairUseCode: profile.wheelchairUseCode,
+            activityMoveModeCode: profile.activityMoveModeCode
+        )
+
+        let result = await ServerClient.shared.register(payload)
+        switch result {
+        case .success:
+            hasCompletedOnboarding = true
+        case .failure(let msg):
+            errorMessage = msg
+            isSubmitting = false
         }
     }
 }
@@ -1539,7 +1621,7 @@ struct AppView: View {
     private static let orderedServerTables = [
         "health_records",
         "workouts",
-        "profile_snapshots",
+        "users",
         "electrocardiograms",
         "workout_routes",
         "heartbeat_series",
@@ -1553,8 +1635,8 @@ struct AppView: View {
             return "Records"
         case "workouts":
             return "Workouts"
-        case "profile_snapshots":
-            return "Profile Snapshots"
+        case "users":
+            return "Users"
         case "electrocardiograms":
             return "ECGs"
         case "workout_routes":

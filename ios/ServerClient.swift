@@ -3,7 +3,6 @@ import Foundation
 struct BatchUploadCounts: Decodable {
     let records: Int
     let workouts: Int
-    let profileSnapshots: Int
     let electrocardiograms: Int
     let workoutRoutes: Int
     let heartbeatSeries: Int
@@ -12,7 +11,6 @@ struct BatchUploadCounts: Decodable {
 
     enum CodingKeys: String, CodingKey {
         case records, workouts
-        case profileSnapshots = "profile_snapshots"
         case electrocardiograms
         case workoutRoutes = "workout_routes"
         case heartbeatSeries = "heartbeat_series"
@@ -38,6 +36,31 @@ struct ServerInfoResponse: Decodable {
         case totalItems = "total_items"
         case tables
     }
+}
+
+struct RegisterPayload: Encodable {
+    let name: String
+    let dateOfBirth: String?
+    let biologicalSexCode: Int?
+    let bloodTypeCode: Int?
+    let fitzpatrickSkinTypeCode: Int?
+    let wheelchairUseCode: Int?
+    let activityMoveModeCode: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case dateOfBirth = "date_of_birth"
+        case biologicalSexCode = "biological_sex_code"
+        case bloodTypeCode = "blood_type_code"
+        case fitzpatrickSkinTypeCode = "fitzpatrick_skin_type_code"
+        case wheelchairUseCode = "wheelchair_use_code"
+        case activityMoveModeCode = "activity_move_mode_code"
+    }
+}
+
+enum RegisterResult {
+    case success
+    case failure(String)
 }
 
 enum BatchUploadResult {
@@ -120,6 +143,38 @@ class ServerClient {
 
         print("[ServerClient] Failed to post batch after 3 attempts.")
         return .failure(lastFailure)
+    }
+
+    func register(_ payload: RegisterPayload) async -> RegisterResult {
+        let config: AppConfig
+        do {
+            config = try loadConfig()
+        } catch {
+            return .failure(error.localizedDescription)
+        }
+
+        var request = URLRequest(url: config.baseURL.appending(path: "register"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(config.apiKey, forHTTPHeaderField: "X-API-Key")
+        request.timeoutInterval = 15
+
+        do {
+            request.httpBody = try encoder.encode(payload)
+        } catch {
+            return .failure("Failed to encode register payload.")
+        }
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                let body = String(data: data, encoding: .utf8) ?? ""
+                return .failure("Register failed: \(body)")
+            }
+            return .success
+        } catch {
+            return .failure(error.localizedDescription)
+        }
     }
 
     func fetchInfo() async -> ServerInfoResult {

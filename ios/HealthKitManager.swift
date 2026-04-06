@@ -269,7 +269,6 @@ struct BatchPayload: Codable {
     mutating func merge(_ other: BatchPayload) {
         records += other.records
         workouts += other.workouts
-        profileSnapshots += other.profileSnapshots
         electrocardiograms += other.electrocardiograms
         workoutRoutes += other.workoutRoutes
         heartbeatSeries += other.heartbeatSeries
@@ -574,6 +573,42 @@ enum HKSync {
         }
         for characteristicType in allCharacteristicTypes { types.insert(characteristicType) }
         return types
+    }
+
+    // MARK: - Profile characteristics
+
+    struct ProfileCharacteristics {
+        var dateOfBirth: String?
+        var biologicalSexCode: Int?
+        var bloodTypeCode: Int?
+        var fitzpatrickSkinTypeCode: Int?
+        var wheelchairUseCode: Int?
+        var activityMoveModeCode: Int?
+    }
+
+    static func readCharacteristics(from store: HKHealthStore) -> ProfileCharacteristics {
+        var profile = ProfileCharacteristics()
+        if let dob = try? store.dateOfBirthComponents().date {
+            let formatter = DateFormatter()
+            formatter.dateFormat = "yyyy-MM-dd"
+            profile.dateOfBirth = formatter.string(from: dob)
+        }
+        if let sex = try? store.biologicalSex().biologicalSex, sex != .notSet {
+            profile.biologicalSexCode = sex.rawValue
+        }
+        if let blood = try? store.bloodType().bloodType, blood != .notSet {
+            profile.bloodTypeCode = blood.rawValue
+        }
+        if let skin = try? store.fitzpatrickSkinType().skinType, skin != .notSet {
+            profile.fitzpatrickSkinTypeCode = skin.rawValue
+        }
+        if let wheelchair = try? store.wheelchairUse().wheelchairUse, wheelchair != .notSet {
+            profile.wheelchairUseCode = wheelchair.rawValue
+        }
+        if let moveMode = try? store.activityMoveMode().activityMoveMode {
+            profile.activityMoveModeCode = moveMode.rawValue
+        }
+        return profile
     }
 
     // MARK: - Serialization
