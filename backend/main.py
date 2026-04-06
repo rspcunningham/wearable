@@ -2,7 +2,7 @@ from fastapi import FastAPI, Security, HTTPException, Depends
 from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel, Field
 from typing import Optional, Any
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from dateutil.parser import isoparse
 import json
 import logging
@@ -836,3 +836,45 @@ def _do_ingest(payload: BatchPayload):
 @app.get("/health")
 def health():
     return {"status": "ok", "time": datetime.utcnow().isoformat()}
+
+
+INFO_TABLES = [
+    "health_records",
+    "workouts",
+    "activity_summaries",
+    "profile_snapshots",
+    "electrocardiograms",
+    "workout_routes",
+    "heartbeat_series",
+    "audiograms",
+    "state_of_mind_records",
+    "correlations",
+]
+
+
+@app.get("/info", dependencies=[Depends(verify_api_key)])
+def info():
+    tables: dict[str, int] = {}
+    total_items = 0
+    last_ingest_at: Optional[datetime] = None
+
+    with get_db() as conn:
+        cur = conn.cursor()
+
+        for table_name in INFO_TABLES:
+            cur.execute(f"SELECT COUNT(*), MAX(received_at) FROM {table_name}")
+            row_count, latest_received_at = cur.fetchone()
+
+            row_count = int(row_count or 0)
+            tables[table_name] = row_count
+            total_items += row_count
+
+            if latest_received_at and (last_ingest_at is None or latest_received_at > last_ingest_at):
+                last_ingest_at = latest_received_at
+
+    return {
+        "server_time": datetime.now(timezone.utc).isoformat(),
+        "last_ingest_at": last_ingest_at.isoformat() if last_ingest_at else None,
+        "total_items": total_items,
+        "tables": tables,
+    }
