@@ -4,11 +4,17 @@ from pydantic import BaseModel, Field
 from typing import Optional, Any
 from datetime import datetime, date, timezone
 from dateutil.parser import isoparse
+from pathlib import Path
 import json
 import logging
 import os
+import shutil
+import sqlite3
+import threading
 import time
-import psycopg
+import uuid
+
+import duckdb
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("healthsync")
@@ -18,7 +24,10 @@ app = FastAPI(title="Health Sync Server")
 API_KEY = os.environ.get("HEALTH_API_KEY", "change-me-before-deploying")
 api_key_header = APIKeyHeader(name="X-API-Key")
 
-DATABASE_URL = os.environ.get("DATABASE_URL")
+DEFAULT_DATA_DIR = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "./data")
+DATA_DIR = Path(os.environ.get("HEALTHSYNC_DATA_DIR", DEFAULT_DATA_DIR))
+SQLITE_PATH = Path(os.environ.get("SQLITE_PATH", str(DATA_DIR / "ingest.sqlite")))
+PARQUET_ROOT = Path(os.environ.get("PARQUET_ROOT", str(DATA_DIR / "parquet")))
 
 
 # ── HealthKit enum mappings ──────────────────────────────────────────────────
@@ -104,210 +113,38 @@ def resolve_codes(mapping: dict[int, str], values: list[int]) -> list[str]:
     return [mapping.get(v, f"unknown_{v}") for v in values]
 
 
-# ── DB setup ──────────────────────────────────────────────────────────────────
-
-def get_db():
-    if not DATABASE_URL:
-        raise RuntimeError("DATABASE_URL is required.")
-    return psycopg.connect(DATABASE_URL)
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
-def init_db():
-    statements = [
-        """
-        CREATE TABLE IF NOT EXISTS health_records (
-            id BIGSERIAL PRIMARY KEY,
-            sample_uuid TEXT NOT NULL UNIQUE,
-            record_type TEXT NOT NULL,
-            value DOUBLE PRECISION,
-            unit TEXT,
-            start_date TIMESTAMPTZ NOT NULL,
-            end_date TIMESTAMPTZ,
-            device TEXT,
-            source_name TEXT,
-            metadata TEXT,
-            received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            updated_at TIMESTAMPTZ,
-            update_count INTEGER NOT NULL DEFAULT 0
-        )
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS workouts (
-            id BIGSERIAL PRIMARY KEY,
-            sample_uuid TEXT NOT NULL UNIQUE,
-            workout_type TEXT NOT NULL,
-            start_date TIMESTAMPTZ NOT NULL,
-            end_date TIMESTAMPTZ,
-            duration_seconds DOUBLE PRECISION,
-            total_energy_burned DOUBLE PRECISION,
-            total_distance DOUBLE PRECISION,
-            source_name TEXT,
-            metadata TEXT,
-            received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            updated_at TIMESTAMPTZ,
-            update_count INTEGER NOT NULL DEFAULT 0
-        )
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS activity_summaries (
-            id BIGSERIAL PRIMARY KEY,
-            date DATE NOT NULL UNIQUE,
-            active_energy_burned DOUBLE PRECISION,
-            active_energy_burned_goal DOUBLE PRECISION,
-            apple_move_time DOUBLE PRECISION,
-            apple_move_time_goal DOUBLE PRECISION,
-            apple_exercise_time DOUBLE PRECISION,
-            apple_exercise_time_goal DOUBLE PRECISION,
-            apple_stand_hours DOUBLE PRECISION,
-            apple_stand_hours_goal DOUBLE PRECISION,
-            received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            updated_at TIMESTAMPTZ,
-            update_count INTEGER NOT NULL DEFAULT 0
-        )
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS users (
-            id BIGSERIAL PRIMARY KEY,
-            name TEXT NOT NULL,
-            date_of_birth DATE,
-            biological_sex TEXT,
-            blood_type TEXT,
-            fitzpatrick_skin_type TEXT,
-            wheelchair_use TEXT,
-            activity_move_mode TEXT,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            updated_at TIMESTAMPTZ,
-            update_count INTEGER NOT NULL DEFAULT 0
-        )
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS electrocardiograms (
-            id BIGSERIAL PRIMARY KEY,
-            sample_uuid TEXT NOT NULL UNIQUE,
-            start_date TIMESTAMPTZ NOT NULL,
-            end_date TIMESTAMPTZ,
-            device TEXT,
-            source_name TEXT,
-            number_of_voltage_measurements INTEGER NOT NULL,
-            sampling_frequency_hz DOUBLE PRECISION,
-            classification TEXT NOT NULL,
-            symptoms_status TEXT NOT NULL,
-            average_heart_rate_bpm DOUBLE PRECISION,
-            voltage_measurements_json TEXT NOT NULL,
-            metadata TEXT,
-            received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            updated_at TIMESTAMPTZ,
-            update_count INTEGER NOT NULL DEFAULT 0
-        )
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS workout_routes (
-            id BIGSERIAL PRIMARY KEY,
-            sample_uuid TEXT NOT NULL UNIQUE,
-            start_date TIMESTAMPTZ NOT NULL,
-            end_date TIMESTAMPTZ,
-            device TEXT,
-            source_name TEXT,
-            locations_json TEXT NOT NULL,
-            metadata TEXT,
-            received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            updated_at TIMESTAMPTZ,
-            update_count INTEGER NOT NULL DEFAULT 0
-        )
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS heartbeat_series (
-            id BIGSERIAL PRIMARY KEY,
-            sample_uuid TEXT NOT NULL UNIQUE,
-            start_date TIMESTAMPTZ NOT NULL,
-            end_date TIMESTAMPTZ,
-            device TEXT,
-            source_name TEXT,
-            beats_json TEXT NOT NULL,
-            metadata TEXT,
-            received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            updated_at TIMESTAMPTZ,
-            update_count INTEGER NOT NULL DEFAULT 0
-        )
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS audiograms (
-            id BIGSERIAL PRIMARY KEY,
-            sample_uuid TEXT NOT NULL UNIQUE,
-            start_date TIMESTAMPTZ NOT NULL,
-            end_date TIMESTAMPTZ,
-            device TEXT,
-            source_name TEXT,
-            sensitivity_points_json TEXT NOT NULL,
-            metadata TEXT,
-            received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            updated_at TIMESTAMPTZ,
-            update_count INTEGER NOT NULL DEFAULT 0
-        )
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS state_of_mind_records (
-            id BIGSERIAL PRIMARY KEY,
-            sample_uuid TEXT NOT NULL UNIQUE,
-            start_date TIMESTAMPTZ NOT NULL,
-            end_date TIMESTAMPTZ,
-            device TEXT,
-            source_name TEXT,
-            kind TEXT NOT NULL,
-            valence DOUBLE PRECISION NOT NULL,
-            valence_classification TEXT NOT NULL,
-            labels_json TEXT NOT NULL,
-            associations_json TEXT NOT NULL,
-            metadata TEXT,
-            received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            updated_at TIMESTAMPTZ,
-            update_count INTEGER NOT NULL DEFAULT 0
-        )
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS correlations (
-            id BIGSERIAL PRIMARY KEY,
-            sample_uuid TEXT NOT NULL UNIQUE,
-            correlation_type TEXT NOT NULL,
-            start_date TIMESTAMPTZ NOT NULL,
-            end_date TIMESTAMPTZ,
-            device TEXT,
-            source_name TEXT,
-            objects_json TEXT NOT NULL,
-            metadata TEXT,
-            received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            updated_at TIMESTAMPTZ,
-            update_count INTEGER NOT NULL DEFAULT 0
-        )
-        """,
-        "CREATE INDEX IF NOT EXISTS idx_records_type_date ON health_records(record_type, start_date)",
-        "CREATE INDEX IF NOT EXISTS idx_workouts_date ON workouts(start_date)",
-        "CREATE INDEX IF NOT EXISTS idx_ecg_start_date ON electrocardiograms(start_date)",
-        "CREATE INDEX IF NOT EXISTS idx_workout_routes_start_date ON workout_routes(start_date)",
-        "CREATE INDEX IF NOT EXISTS idx_heartbeat_series_start_date ON heartbeat_series(start_date)",
-        "CREATE INDEX IF NOT EXISTS idx_audiograms_start_date ON audiograms(start_date)",
-        "CREATE INDEX IF NOT EXISTS idx_state_of_mind_start_date ON state_of_mind_records(start_date)",
-        "CREATE INDEX IF NOT EXISTS idx_correlations_start_date ON correlations(start_date)",
-    ]
-
-    with get_db() as conn:
-        for statement in statements:
-            conn.execute(statement)
+def to_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
-init_db()
+def iso_utc(value: datetime) -> str:
+    return to_utc(value).isoformat()
+
+
+def duration_seconds(start: datetime, end: Optional[datetime]) -> Optional[float]:
+    if end is None:
+        return None
+    return (to_utc(end) - to_utc(start)).total_seconds()
 
 
 def model_to_dict(model: BaseModel) -> dict[str, Any]:
-    if hasattr(model, "model_dump"):
-        return model.model_dump()
-    return model.dict()
+    return model.model_dump(mode="json")
 
 
 def dump_json(value: Any) -> Optional[str]:
     if value is None:
         return None
-    return json.dumps(value)
+    return json.dumps(value, separators=(",", ":"), sort_keys=True)
+
+
+def sql_string_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -318,7 +155,7 @@ def verify_api_key(key: str = Security(api_key_header)):
     return key
 
 
-# ── Models ────────────────────────────────────────────────────────────────────
+# ── Request models ────────────────────────────────────────────────────────────
 
 class HealthRecord(BaseModel):
     sample_uuid: str
@@ -345,7 +182,7 @@ class Workout(BaseModel):
 
 
 class ActivitySummary(BaseModel):
-    date: str  # accepts ISO-8601 datetime or YYYY-MM-DD; normalized to date at insert
+    date: str
     active_energy_burned: Optional[float] = None
     active_energy_burned_goal: Optional[float] = None
     apple_move_time: Optional[float] = None
@@ -495,9 +332,245 @@ class BatchPayload(BaseModel):
     correlations: list[CorrelationRecord] = Field(default_factory=list)
 
 
+class CanonicalEvent(BaseModel):
+    event_id: str
+    source_collection: str
+    event_kind: str
+    sample_uuid: Optional[str] = None
+    record_type: Optional[str] = None
+    start_ts: str
+    end_ts: Optional[str] = None
+    event_date: str
+    duration_seconds: Optional[float] = None
+    value: Optional[float] = None
+    unit: Optional[str] = None
+    source_name: Optional[str] = None
+    device: Optional[str] = None
+    metadata_json: Optional[str] = None
+    payload_json: str
+    received_at: str
+
+
+# ── Canonical event conversion ────────────────────────────────────────────────
+
+def make_event(
+    *,
+    event_id: str,
+    source_collection: str,
+    event_kind: str,
+    start: datetime,
+    end: Optional[datetime],
+    payload: dict[str, Any],
+    received_at: datetime,
+    sample_uuid: Optional[str] = None,
+    record_type: Optional[str] = None,
+    value: Optional[float] = None,
+    unit: Optional[str] = None,
+    source_name: Optional[str] = None,
+    device: Optional[str] = None,
+    metadata: Optional[dict[str, Any]] = None,
+) -> CanonicalEvent:
+    start_utc = to_utc(start)
+    end_utc = to_utc(end) if end else None
+    return CanonicalEvent(
+        event_id=event_id,
+        source_collection=source_collection,
+        event_kind=event_kind,
+        sample_uuid=sample_uuid,
+        record_type=record_type,
+        start_ts=start_utc.isoformat(),
+        end_ts=end_utc.isoformat() if end_utc else None,
+        event_date=start_utc.date().isoformat(),
+        duration_seconds=duration_seconds(start_utc, end_utc),
+        value=value,
+        unit=unit,
+        source_name=source_name,
+        device=device,
+        metadata_json=dump_json(metadata),
+        payload_json=dump_json(payload) or "{}",
+        received_at=iso_utc(received_at),
+    )
+
+
+def activity_summary_date(value: str) -> date:
+    try:
+        return isoparse(value).date()
+    except ValueError:
+        return date.fromisoformat(value)
+
+
+def canonicalize_payload(payload: BatchPayload, received_at: Optional[datetime] = None) -> list[CanonicalEvent]:
+    received_at = received_at or utc_now()
+    events: list[CanonicalEvent] = []
+
+    for record in payload.records:
+        d = model_to_dict(record)
+        events.append(make_event(
+            event_id=f"health_record:{record.sample_uuid}",
+            source_collection="records",
+            event_kind="health_record",
+            sample_uuid=record.sample_uuid,
+            record_type=record.record_type,
+            start=record.start_date,
+            end=record.end_date,
+            value=record.value,
+            unit=record.unit,
+            source_name=record.source_name,
+            device=record.device,
+            metadata=record.metadata,
+            payload=d,
+            received_at=received_at,
+        ))
+
+    for workout in payload.workouts:
+        d = model_to_dict(workout)
+        events.append(make_event(
+            event_id=f"workout:{workout.sample_uuid}",
+            source_collection="workouts",
+            event_kind="workout",
+            sample_uuid=workout.sample_uuid,
+            record_type=workout.workout_type,
+            start=workout.start_date,
+            end=workout.end_date,
+            value=workout.duration_seconds,
+            unit="s" if workout.duration_seconds is not None else None,
+            source_name=workout.source_name,
+            metadata=workout.metadata,
+            payload=d,
+            received_at=received_at,
+        ))
+
+    for summary in payload.activity_summaries:
+        d = model_to_dict(summary)
+        summary_day = activity_summary_date(summary.date)
+        summary_start = datetime.combine(summary_day, datetime.min.time(), tzinfo=timezone.utc)
+        events.append(make_event(
+            event_id=f"activity_summary:{summary_day.isoformat()}",
+            source_collection="activity_summaries",
+            event_kind="activity_summary",
+            record_type="activity_summary",
+            start=summary_start,
+            end=None,
+            payload=d,
+            received_at=received_at,
+        ))
+
+    for ecg in payload.electrocardiograms:
+        d = model_to_dict(ecg)
+        d["classification"] = resolve_code(HK_ECG_CLASSIFICATION, ecg.classification_code)
+        d["symptoms_status"] = resolve_code(HK_SYMPTOMS_STATUS, ecg.symptoms_status_code)
+        events.append(make_event(
+            event_id=f"electrocardiogram:{ecg.sample_uuid}",
+            source_collection="electrocardiograms",
+            event_kind="electrocardiogram",
+            sample_uuid=ecg.sample_uuid,
+            record_type="electrocardiogram",
+            start=ecg.start_date,
+            end=ecg.end_date,
+            source_name=ecg.source_name,
+            device=ecg.device,
+            metadata=ecg.metadata,
+            payload=d,
+            received_at=received_at,
+        ))
+
+    for route in payload.workout_routes:
+        d = model_to_dict(route)
+        events.append(make_event(
+            event_id=f"workout_route:{route.sample_uuid}",
+            source_collection="workout_routes",
+            event_kind="workout_route",
+            sample_uuid=route.sample_uuid,
+            record_type="workout_route",
+            start=route.start_date,
+            end=route.end_date,
+            source_name=route.source_name,
+            device=route.device,
+            metadata=route.metadata,
+            payload=d,
+            received_at=received_at,
+        ))
+
+    for series in payload.heartbeat_series:
+        d = model_to_dict(series)
+        events.append(make_event(
+            event_id=f"heartbeat_series:{series.sample_uuid}",
+            source_collection="heartbeat_series",
+            event_kind="heartbeat_series",
+            sample_uuid=series.sample_uuid,
+            record_type="heartbeat_series",
+            start=series.start_date,
+            end=series.end_date,
+            source_name=series.source_name,
+            device=series.device,
+            metadata=series.metadata,
+            payload=d,
+            received_at=received_at,
+        ))
+
+    for audiogram in payload.audiograms:
+        d = model_to_dict(audiogram)
+        d["sensitivity_points"] = [resolve_audiogram_point(point) for point in audiogram.sensitivity_points]
+        events.append(make_event(
+            event_id=f"audiogram:{audiogram.sample_uuid}",
+            source_collection="audiograms",
+            event_kind="audiogram",
+            sample_uuid=audiogram.sample_uuid,
+            record_type="audiogram",
+            start=audiogram.start_date,
+            end=audiogram.end_date,
+            source_name=audiogram.source_name,
+            device=audiogram.device,
+            metadata=audiogram.metadata,
+            payload=d,
+            received_at=received_at,
+        ))
+
+    for state in payload.state_of_mind:
+        d = model_to_dict(state)
+        d["kind"] = resolve_code(HK_STATE_OF_MIND_KIND, state.kind_code)
+        d["valence_classification"] = resolve_code(HK_VALENCE_CLASSIFICATION, state.valence_classification_code)
+        d["labels"] = resolve_codes(HK_STATE_OF_MIND_LABEL, state.label_codes)
+        d["associations"] = resolve_codes(HK_STATE_OF_MIND_ASSOCIATION, state.association_codes)
+        events.append(make_event(
+            event_id=f"state_of_mind:{state.sample_uuid}",
+            source_collection="state_of_mind",
+            event_kind="state_of_mind",
+            sample_uuid=state.sample_uuid,
+            record_type=d["kind"],
+            start=state.start_date,
+            end=state.end_date,
+            value=state.valence,
+            source_name=state.source_name,
+            device=state.device,
+            metadata=state.metadata,
+            payload=d,
+            received_at=received_at,
+        ))
+
+    for correlation in payload.correlations:
+        d = model_to_dict(correlation)
+        events.append(make_event(
+            event_id=f"correlation:{correlation.sample_uuid}",
+            source_collection="correlations",
+            event_kind="correlation",
+            sample_uuid=correlation.sample_uuid,
+            record_type=correlation.correlation_type,
+            start=correlation.start_date,
+            end=correlation.end_date,
+            source_name=correlation.source_name,
+            device=correlation.device,
+            metadata=correlation.metadata,
+            payload=d,
+            received_at=received_at,
+        ))
+
+    return events
+
+
 # ── Audiogram JSON resolution ────────────────────────────────────────────────
 
-def resolve_audiogram_point(point: AudiogramSensitivityPoint) -> dict:
+def resolve_audiogram_point(point: AudiogramSensitivityPoint) -> dict[str, Any]:
     d = model_to_dict(point)
     d["tests"] = [
         {
@@ -511,6 +584,549 @@ def resolve_audiogram_point(point: AudiogramSensitivityPoint) -> dict:
         for t in d["tests"]
     ]
     return d
+
+
+# ── SQLite + Parquet storage ─────────────────────────────────────────────────
+
+CANONICAL_COLUMNS = [
+    "event_id", "source_collection", "event_kind", "sample_uuid", "record_type",
+    "start_ts", "end_ts", "event_date", "duration_seconds", "value", "unit",
+    "source_name", "device", "metadata_json", "payload_json", "received_at",
+]
+
+
+class HealthStorage:
+    def __init__(
+        self,
+        *,
+        data_dir: Path = DATA_DIR,
+        sqlite_path: Path = SQLITE_PATH,
+        parquet_root: Path = PARQUET_ROOT,
+    ):
+        self.data_dir = Path(data_dir)
+        self.sqlite_path = Path(sqlite_path)
+        self.parquet_root = Path(parquet_root)
+        self.flush_lock = threading.Lock()
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+        self.parquet_root.mkdir(parents=True, exist_ok=True)
+        (self.parquet_root / ".tmp").mkdir(parents=True, exist_ok=True)
+        self.init_db()
+        self.recover_unfinished_flushes()
+
+    @classmethod
+    def from_env(cls) -> "HealthStorage":
+        return cls(
+            data_dir=DATA_DIR,
+            sqlite_path=SQLITE_PATH,
+            parquet_root=PARQUET_ROOT,
+        )
+
+    def connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.sqlite_path, timeout=30, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA foreign_keys=ON")
+        return conn
+
+    def init_db(self) -> None:
+        with self.connect() as conn:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS ingest_events (
+                  event_id TEXT PRIMARY KEY,
+                  source_collection TEXT NOT NULL,
+                  event_kind TEXT NOT NULL,
+                  sample_uuid TEXT,
+                  record_type TEXT,
+                  start_ts TEXT NOT NULL,
+                  end_ts TEXT,
+                  event_date TEXT NOT NULL,
+                  duration_seconds REAL,
+                  value REAL,
+                  unit TEXT,
+                  source_name TEXT,
+                  device TEXT,
+                  metadata_json TEXT,
+                  payload_json TEXT NOT NULL,
+                  received_at TEXT NOT NULL,
+                  flush_id TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS seen_events (
+                  event_id TEXT PRIMARY KEY,
+                  source_collection TEXT NOT NULL,
+                  event_date TEXT NOT NULL,
+                  first_received_at TEXT NOT NULL,
+                  last_received_at TEXT NOT NULL,
+                  flushed_at TEXT,
+                  flush_id TEXT,
+                  update_count INTEGER NOT NULL DEFAULT 0
+                );
+
+                CREATE TABLE IF NOT EXISTS flush_runs (
+                  flush_id TEXT PRIMARY KEY,
+                  status TEXT NOT NULL,
+                  started_at TEXT NOT NULL,
+                  completed_at TEXT,
+                  row_count INTEGER NOT NULL DEFAULT 0,
+                  error TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS parquet_files (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  flush_id TEXT NOT NULL,
+                  event_date TEXT NOT NULL,
+                  path TEXT NOT NULL UNIQUE,
+                  row_count INTEGER NOT NULL,
+                  min_start_ts TEXT,
+                  max_start_ts TEXT,
+                  created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS user_profiles (
+                  id INTEGER PRIMARY KEY CHECK (id = 1),
+                  payload_json TEXT NOT NULL,
+                  updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS storage_meta (
+                  key TEXT PRIMARY KEY,
+                  value TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_ingest_events_flush_date
+                  ON ingest_events(flush_id, event_date, start_ts);
+                CREATE INDEX IF NOT EXISTS idx_seen_events_date
+                  ON seen_events(event_date);
+                CREATE INDEX IF NOT EXISTS idx_parquet_files_date
+                  ON parquet_files(event_date);
+                CREATE INDEX IF NOT EXISTS idx_flush_runs_status
+                  ON flush_runs(status, started_at);
+                """
+            )
+
+    def recover_unfinished_flushes(self) -> None:
+        tmp_dir = self.parquet_root / ".tmp"
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir)
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+
+        now = iso_utc(utc_now())
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                rows = conn.execute(
+                    "SELECT flush_id FROM flush_runs WHERE status = 'writing'"
+                ).fetchall()
+                for row in rows:
+                    flush_id = row["flush_id"]
+                    conn.execute(
+                        "UPDATE ingest_events SET flush_id = NULL WHERE flush_id = ?",
+                        (flush_id,),
+                    )
+                    conn.execute(
+                        "UPDATE flush_runs SET status = 'failed', completed_at = ?, error = ? WHERE flush_id = ?",
+                        (now, "Recovered after interrupted write", flush_id),
+                    )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+    def store_events(self, events: list[CanonicalEvent]) -> int:
+        if not events:
+            return 0
+
+        accepted = 0
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                for event in events:
+                    row = event.model_dump()
+                    seen = conn.execute(
+                        "SELECT flushed_at FROM seen_events WHERE event_id = ?",
+                        (event.event_id,),
+                    ).fetchone()
+
+                    if seen and seen["flushed_at"] is not None:
+                        conn.execute(
+                            """
+                            UPDATE seen_events
+                            SET last_received_at = ?, update_count = update_count + 1
+                            WHERE event_id = ?
+                            """,
+                            (event.received_at, event.event_id),
+                        )
+                        accepted += 1
+                        continue
+
+                    if seen:
+                        conn.execute(
+                            """
+                            UPDATE seen_events
+                            SET last_received_at = ?, update_count = update_count + 1
+                            WHERE event_id = ?
+                            """,
+                            (event.received_at, event.event_id),
+                        )
+                    else:
+                        conn.execute(
+                            """
+                            INSERT INTO seen_events
+                              (event_id, source_collection, event_date, first_received_at, last_received_at)
+                            VALUES (?, ?, ?, ?, ?)
+                            """,
+                            (event.event_id, event.source_collection, event.event_date, event.received_at, event.received_at),
+                        )
+
+                    conn.execute(
+                        f"""
+                        INSERT INTO ingest_events ({', '.join(CANONICAL_COLUMNS)})
+                        VALUES ({', '.join(['?'] * len(CANONICAL_COLUMNS))})
+                        ON CONFLICT(event_id) DO UPDATE SET
+                          source_collection = excluded.source_collection,
+                          event_kind = excluded.event_kind,
+                          sample_uuid = excluded.sample_uuid,
+                          record_type = excluded.record_type,
+                          start_ts = excluded.start_ts,
+                          end_ts = excluded.end_ts,
+                          event_date = excluded.event_date,
+                          duration_seconds = excluded.duration_seconds,
+                          value = excluded.value,
+                          unit = excluded.unit,
+                          source_name = excluded.source_name,
+                          device = excluded.device,
+                          metadata_json = excluded.metadata_json,
+                          payload_json = excluded.payload_json,
+                          received_at = excluded.received_at,
+                          flush_id = NULL
+                        """,
+                        tuple(row[column] for column in CANONICAL_COLUMNS),
+                    )
+                    accepted += 1
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        return accepted
+
+    def store_user_profile(self, payload: RegisterPayload) -> None:
+        profile = model_to_dict(payload)
+        profile["biological_sex"] = resolve_code(HK_BIOLOGICAL_SEX, payload.biological_sex_code)
+        profile["blood_type"] = resolve_code(HK_BLOOD_TYPE, payload.blood_type_code)
+        profile["fitzpatrick_skin_type"] = resolve_code(HK_FITZPATRICK_SKIN_TYPE, payload.fitzpatrick_skin_type_code)
+        profile["wheelchair_use"] = resolve_code(HK_WHEELCHAIR_USE, payload.wheelchair_use_code)
+        profile["activity_move_mode"] = resolve_code(HK_ACTIVITY_MOVE_MODE, payload.activity_move_mode_code)
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO user_profiles (id, payload_json, updated_at)
+                VALUES (1, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                  payload_json = excluded.payload_json,
+                  updated_at = excluded.updated_at
+                """,
+                (dump_json(profile), iso_utc(utc_now())),
+            )
+
+    def pending_count(self) -> int:
+        with self.connect() as conn:
+            return int(conn.execute("SELECT COUNT(*) FROM ingest_events WHERE flush_id IS NULL").fetchone()[0])
+
+    def finalizable_event_dates(self, cutoff_date: Optional[date] = None) -> list[str]:
+        cutoff = (cutoff_date or utc_now().date()).isoformat()
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT event_date
+                FROM ingest_events
+                WHERE flush_id IS NULL AND event_date < ?
+                ORDER BY event_date
+                """,
+                (cutoff,),
+            ).fetchall()
+        return [row["event_date"] for row in rows]
+
+    def last_completed_flush_at(self) -> Optional[datetime]:
+        with self.connect() as conn:
+            value = conn.execute(
+                "SELECT MAX(completed_at) FROM flush_runs WHERE status = 'completed'"
+            ).fetchone()[0]
+        return isoparse(value) if value else None
+
+    def should_flush(self) -> bool:
+        return bool(self.finalizable_event_dates())
+
+    def maybe_flush(self) -> Optional[dict[str, Any]]:
+        if not self.should_flush():
+            return None
+        return self.flush_pending()
+
+    def flush_pending(self, cutoff_date: Optional[date] = None) -> Optional[dict[str, Any]]:
+        if not self.flush_lock.acquire(blocking=False):
+            return None
+        flush_id = uuid.uuid4().hex
+        now = iso_utc(utc_now())
+        tmp_paths: list[Path] = []
+        cutoff = (cutoff_date or utc_now().date()).isoformat()
+        try:
+            with self.connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    rows = conn.execute(
+                        """
+                        SELECT * FROM ingest_events
+                        WHERE flush_id IS NULL AND event_date < ?
+                        ORDER BY event_date, start_ts, event_id
+                        """,
+                        (cutoff,),
+                    ).fetchall()
+                    if not rows:
+                        conn.rollback()
+                        return None
+                    conn.execute(
+                        "INSERT INTO flush_runs (flush_id, status, started_at, row_count) VALUES (?, 'writing', ?, ?)",
+                        (flush_id, now, len(rows)),
+                    )
+                    conn.execute(
+                        "UPDATE ingest_events SET flush_id = ? WHERE flush_id IS NULL AND event_date < ?",
+                        (flush_id, cutoff),
+                    )
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
+
+            grouped: dict[str, list[sqlite3.Row]] = {}
+            for row in rows:
+                grouped.setdefault(row["event_date"], []).append(row)
+
+            file_records: list[dict[str, Any]] = []
+            for event_date, date_rows in grouped.items():
+                final_dir = self.parquet_root / "health_events" / f"event_date={event_date}"
+                final_dir.mkdir(parents=True, exist_ok=True)
+                final_path = final_dir / "events.parquet"
+                tmp_path = self.parquet_root / ".tmp" / f"events-{flush_id}-{event_date}.parquet"
+                tmp_paths.append(tmp_path)
+                self.write_daily_parquet(tmp_path, date_rows, existing_path=final_path if final_path.exists() else None)
+                stats = self.parquet_stats(tmp_path)
+                os.replace(tmp_path, final_path)
+                file_records.append({
+                    "event_date": event_date,
+                    "path": str(final_path.relative_to(self.parquet_root)),
+                    "row_count": stats["row_count"],
+                    "min_start_ts": stats["min_start_ts"],
+                    "max_start_ts": stats["max_start_ts"],
+                })
+
+            completed_at = iso_utc(utc_now())
+            with self.connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    for file_record in file_records:
+                        conn.execute(
+                            """
+                            INSERT INTO parquet_files
+                              (flush_id, event_date, path, row_count, min_start_ts, max_start_ts, created_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(path) DO UPDATE SET
+                              flush_id = excluded.flush_id,
+                              event_date = excluded.event_date,
+                              row_count = excluded.row_count,
+                              min_start_ts = excluded.min_start_ts,
+                              max_start_ts = excluded.max_start_ts,
+                              created_at = excluded.created_at
+                            """,
+                            (
+                                flush_id,
+                                file_record["event_date"],
+                                file_record["path"],
+                                file_record["row_count"],
+                                file_record["min_start_ts"],
+                                file_record["max_start_ts"],
+                                completed_at,
+                            ),
+                        )
+                    conn.execute(
+                        """
+                        UPDATE seen_events
+                        SET flushed_at = ?, flush_id = ?
+                        WHERE event_id IN (SELECT event_id FROM ingest_events WHERE flush_id = ?)
+                        """,
+                        (completed_at, flush_id, flush_id),
+                    )
+                    conn.execute("DELETE FROM ingest_events WHERE flush_id = ?", (flush_id,))
+                    conn.execute(
+                        "UPDATE flush_runs SET status = 'completed', completed_at = ? WHERE flush_id = ?",
+                        (completed_at, flush_id),
+                    )
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
+
+            logger.info("FLUSH OK: %s rows into %s parquet files", len(rows), len(file_records))
+            return {"flush_id": flush_id, "row_count": len(rows), "files": len(file_records)}
+        except Exception as exc:
+            error = str(exc)
+            logger.exception("FLUSH FAILED")
+            with self.connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    conn.execute("UPDATE ingest_events SET flush_id = NULL WHERE flush_id = ?", (flush_id,))
+                    conn.execute(
+                        "UPDATE flush_runs SET status = 'failed', completed_at = ?, error = ? WHERE flush_id = ?",
+                        (iso_utc(utc_now()), error, flush_id),
+                    )
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    logger.exception("Failed to mark flush failure")
+            raise
+        finally:
+            for path in tmp_paths:
+                try:
+                    path.unlink(missing_ok=True)
+                except Exception:
+                    logger.exception("Failed to remove temp parquet file %s", path)
+            self.flush_lock.release()
+
+    def write_daily_parquet(
+        self,
+        path: Path,
+        rows: list[sqlite3.Row],
+        *,
+        existing_path: Optional[Path] = None,
+    ) -> None:
+        values = [tuple(row[column] for column in CANONICAL_COLUMNS) for row in rows]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with duckdb.connect(database=":memory:") as conn:
+            conn.execute(
+                """
+                CREATE TABLE events (
+                    event_id VARCHAR,
+                    source_collection VARCHAR,
+                    event_kind VARCHAR,
+                    sample_uuid VARCHAR,
+                    record_type VARCHAR,
+                    start_ts TIMESTAMPTZ,
+                    end_ts TIMESTAMPTZ,
+                    event_date DATE,
+                    duration_seconds DOUBLE,
+                    value DOUBLE,
+                    unit VARCHAR,
+                    source_name VARCHAR,
+                    device VARCHAR,
+                    metadata_json VARCHAR,
+                    payload_json VARCHAR,
+                    received_at TIMESTAMPTZ
+                )
+                """
+            )
+            conn.executemany(
+                f"INSERT INTO events VALUES ({', '.join(['?'] * len(CANONICAL_COLUMNS))})",
+                values,
+            )
+            if existing_path:
+                existing_literal = sql_string_literal(str(existing_path))
+                output_literal = sql_string_literal(str(path))
+                conn.execute(
+                    f"""
+                    COPY (
+                        SELECT {', '.join(CANONICAL_COLUMNS)}
+                        FROM (
+                            SELECT
+                                *,
+                                row_number() OVER (
+                                    PARTITION BY event_id
+                                    ORDER BY received_at DESC, start_ts DESC
+                                ) AS row_num
+                            FROM (
+                                SELECT {', '.join(CANONICAL_COLUMNS)}
+                                FROM read_parquet({existing_literal})
+                                UNION ALL
+                                SELECT {', '.join(CANONICAL_COLUMNS)}
+                                FROM events
+                            )
+                        )
+                        WHERE row_num = 1
+                        ORDER BY start_ts, event_id
+                    ) TO {output_literal} (FORMAT PARQUET)
+                    """
+                )
+            else:
+                output_literal = sql_string_literal(str(path))
+                conn.execute(
+                    f"""
+                    COPY (
+                        SELECT {', '.join(CANONICAL_COLUMNS)}
+                        FROM events
+                        ORDER BY start_ts, event_id
+                    ) TO {output_literal} (FORMAT PARQUET)
+                    """
+                )
+
+    def parquet_stats(self, path: Path) -> dict[str, Any]:
+        with duckdb.connect(database=":memory:") as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS row_count,
+                    CAST(MIN(start_ts) AS VARCHAR) AS min_start_ts,
+                    CAST(MAX(start_ts) AS VARCHAR) AS max_start_ts
+                FROM read_parquet(?)
+                """,
+                (str(path),),
+            ).fetchone()
+        return {
+            "row_count": int(row[0]),
+            "min_start_ts": row[1],
+            "max_start_ts": row[2],
+        }
+
+    def info(self) -> dict[str, Any]:
+        today = utc_now().date().isoformat()
+        with self.connect() as conn:
+            pending = int(conn.execute("SELECT COUNT(*) FROM ingest_events WHERE flush_id IS NULL").fetchone()[0])
+            finalizable = int(conn.execute(
+                "SELECT COUNT(*) FROM ingest_events WHERE flush_id IS NULL AND event_date < ?",
+                (today,),
+            ).fetchone()[0])
+            seen = int(conn.execute("SELECT COUNT(*) FROM seen_events").fetchone()[0])
+            parquet_files = int(conn.execute("SELECT COUNT(*) FROM parquet_files").fetchone()[0])
+            parquet_rows = int(conn.execute("SELECT COALESCE(SUM(row_count), 0) FROM parquet_files").fetchone()[0])
+            latest_seen = conn.execute("SELECT MAX(last_received_at) FROM seen_events").fetchone()[0]
+            latest_flush = conn.execute("SELECT MAX(completed_at) FROM flush_runs WHERE status = 'completed'").fetchone()[0]
+            flush_rows = conn.execute(
+                "SELECT status, COUNT(*) FROM flush_runs GROUP BY status"
+            ).fetchall()
+            flush_runs = {row["status"]: int(row["COUNT(*)"]) for row in flush_rows}
+        return {
+            "server_time": iso_utc(utc_now()),
+            "last_ingest_at": latest_seen,
+            "last_flush_at": latest_flush,
+            "total_items": seen,
+            "tables": {
+                "seen_events": seen,
+                "pending_events": pending,
+                "parquet_rows": parquet_rows,
+                "parquet_files": parquet_files,
+            },
+            "pending_items": pending,
+            "hot_items": pending - finalizable,
+            "finalizable_items": finalizable,
+            "parquet_rows": parquet_rows,
+            "parquet_files": parquet_files,
+            "flush_runs": flush_runs,
+            "data_dir": str(self.data_dir),
+            "sqlite_path": str(self.sqlite_path),
+            "parquet_root": str(self.parquet_root),
+        }
+
+
+storage = HealthStorage.from_env()
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -531,302 +1147,30 @@ def ingest_batch(payload: BatchPayload):
     }
     nonempty = {k: v for k, v in counts.items() if v > 0}
     total = sum(counts.values())
-    logger.info(f"INGEST: {total} items — {nonempty}")
+    logger.info("INGEST: %s items — %s", total, nonempty)
     t0 = time.time()
 
     try:
-        _do_ingest(payload)
+        events = canonicalize_payload(payload)
+        accepted = storage.store_events(events)
+        flush_result = storage.maybe_flush()
     except Exception:
         logger.exception("INGEST FAILED")
         raise
 
     elapsed = time.time() - t0
-    logger.info(f"INGEST OK: {total} items in {elapsed:.2f}s")
-    return {"status": "ok", "inserted": counts}
-
-
-def _do_ingest(payload: BatchPayload):
-    with get_db() as conn:
-        cur = conn.cursor()
-        if payload.records:
-            cur.executemany(
-                """
-                INSERT INTO health_records
-                    (sample_uuid, record_type, value, unit, start_date, end_date, device, source_name, metadata)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (sample_uuid) DO UPDATE SET
-                    record_type = EXCLUDED.record_type,
-                    value = EXCLUDED.value,
-                    unit = EXCLUDED.unit,
-                    start_date = EXCLUDED.start_date,
-                    end_date = EXCLUDED.end_date,
-                    device = EXCLUDED.device,
-                    source_name = EXCLUDED.source_name,
-                    metadata = EXCLUDED.metadata,
-                    updated_at = NOW(),
-                    update_count = health_records.update_count + 1
-                """,
-                [
-                    (r.sample_uuid, r.record_type, r.value, r.unit, r.start_date, r.end_date,
-                     r.device, r.source_name, dump_json(r.metadata))
-                    for r in payload.records
-                ],
-            )
-
-        if payload.workouts:
-            cur.executemany(
-                """
-                INSERT INTO workouts
-                    (sample_uuid, workout_type, start_date, end_date, duration_seconds,
-                     total_energy_burned, total_distance, source_name, metadata)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (sample_uuid) DO UPDATE SET
-                    workout_type = EXCLUDED.workout_type,
-                    start_date = EXCLUDED.start_date,
-                    end_date = EXCLUDED.end_date,
-                    duration_seconds = EXCLUDED.duration_seconds,
-                    total_energy_burned = EXCLUDED.total_energy_burned,
-                    total_distance = EXCLUDED.total_distance,
-                    source_name = EXCLUDED.source_name,
-                    metadata = EXCLUDED.metadata,
-                    updated_at = NOW(),
-                    update_count = workouts.update_count + 1
-                """,
-                [
-                    (w.sample_uuid, w.workout_type, w.start_date, w.end_date, w.duration_seconds,
-                     w.total_energy_burned, w.total_distance, w.source_name, dump_json(w.metadata))
-                    for w in payload.workouts
-                ],
-            )
-
-        if payload.activity_summaries:
-            cur.executemany(
-                """
-                INSERT INTO activity_summaries
-                    (date, active_energy_burned, active_energy_burned_goal,
-                     apple_move_time, apple_move_time_goal, apple_exercise_time,
-                     apple_exercise_time_goal, apple_stand_hours, apple_stand_hours_goal)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (date) DO UPDATE SET
-                    active_energy_burned = EXCLUDED.active_energy_burned,
-                    active_energy_burned_goal = EXCLUDED.active_energy_burned_goal,
-                    apple_move_time = EXCLUDED.apple_move_time,
-                    apple_move_time_goal = EXCLUDED.apple_move_time_goal,
-                    apple_exercise_time = EXCLUDED.apple_exercise_time,
-                    apple_exercise_time_goal = EXCLUDED.apple_exercise_time_goal,
-                    apple_stand_hours = EXCLUDED.apple_stand_hours,
-                    apple_stand_hours_goal = EXCLUDED.apple_stand_hours_goal,
-                    updated_at = NOW(),
-                    update_count = activity_summaries.update_count + 1
-                """,
-                [
-                    (isoparse(s.date).date().isoformat(), s.active_energy_burned, s.active_energy_burned_goal,
-                     s.apple_move_time, s.apple_move_time_goal, s.apple_exercise_time,
-                     s.apple_exercise_time_goal, s.apple_stand_hours, s.apple_stand_hours_goal)
-                    for s in payload.activity_summaries
-                ],
-            )
-
-        if payload.electrocardiograms:
-            cur.executemany(
-                """
-                INSERT INTO electrocardiograms
-                    (sample_uuid, start_date, end_date, device, source_name,
-                     number_of_voltage_measurements, sampling_frequency_hz,
-                     classification, symptoms_status, average_heart_rate_bpm,
-                     voltage_measurements_json, metadata)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (sample_uuid) DO UPDATE SET
-                    start_date = EXCLUDED.start_date,
-                    end_date = EXCLUDED.end_date,
-                    device = EXCLUDED.device,
-                    source_name = EXCLUDED.source_name,
-                    number_of_voltage_measurements = EXCLUDED.number_of_voltage_measurements,
-                    sampling_frequency_hz = EXCLUDED.sampling_frequency_hz,
-                    classification = EXCLUDED.classification,
-                    symptoms_status = EXCLUDED.symptoms_status,
-                    average_heart_rate_bpm = EXCLUDED.average_heart_rate_bpm,
-                    voltage_measurements_json = EXCLUDED.voltage_measurements_json,
-                    metadata = EXCLUDED.metadata,
-                    updated_at = NOW(),
-                    update_count = electrocardiograms.update_count + 1
-                """,
-                [
-                    (ecg.sample_uuid, ecg.start_date, ecg.end_date, ecg.device, ecg.source_name,
-                     ecg.number_of_voltage_measurements, ecg.sampling_frequency_hz,
-                     resolve_code(HK_ECG_CLASSIFICATION, ecg.classification_code),
-                     resolve_code(HK_SYMPTOMS_STATUS, ecg.symptoms_status_code),
-                     ecg.average_heart_rate_bpm,
-                     dump_json([model_to_dict(m) for m in ecg.voltage_measurements]),
-                     dump_json(ecg.metadata))
-                    for ecg in payload.electrocardiograms
-                ],
-            )
-
-        if payload.workout_routes:
-            cur.executemany(
-                """
-                INSERT INTO workout_routes
-                    (sample_uuid, start_date, end_date, device, source_name, locations_json, metadata)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (sample_uuid) DO UPDATE SET
-                    start_date = EXCLUDED.start_date,
-                    end_date = EXCLUDED.end_date,
-                    device = EXCLUDED.device,
-                    source_name = EXCLUDED.source_name,
-                    locations_json = EXCLUDED.locations_json,
-                    metadata = EXCLUDED.metadata,
-                    updated_at = NOW(),
-                    update_count = workout_routes.update_count + 1
-                """,
-                [
-                    (route.sample_uuid, route.start_date, route.end_date, route.device, route.source_name,
-                     dump_json([model_to_dict(loc) for loc in route.locations]),
-                     dump_json(route.metadata))
-                    for route in payload.workout_routes
-                ],
-            )
-
-        if payload.heartbeat_series:
-            cur.executemany(
-                """
-                INSERT INTO heartbeat_series
-                    (sample_uuid, start_date, end_date, device, source_name, beats_json, metadata)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (sample_uuid) DO UPDATE SET
-                    start_date = EXCLUDED.start_date,
-                    end_date = EXCLUDED.end_date,
-                    device = EXCLUDED.device,
-                    source_name = EXCLUDED.source_name,
-                    beats_json = EXCLUDED.beats_json,
-                    metadata = EXCLUDED.metadata,
-                    updated_at = NOW(),
-                    update_count = heartbeat_series.update_count + 1
-                """,
-                [
-                    (series.sample_uuid, series.start_date, series.end_date, series.device, series.source_name,
-                     dump_json([model_to_dict(beat) for beat in series.beats]),
-                     dump_json(series.metadata))
-                    for series in payload.heartbeat_series
-                ],
-            )
-
-        if payload.audiograms:
-            cur.executemany(
-                """
-                INSERT INTO audiograms
-                    (sample_uuid, start_date, end_date, device, source_name, sensitivity_points_json, metadata)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (sample_uuid) DO UPDATE SET
-                    start_date = EXCLUDED.start_date,
-                    end_date = EXCLUDED.end_date,
-                    device = EXCLUDED.device,
-                    source_name = EXCLUDED.source_name,
-                    sensitivity_points_json = EXCLUDED.sensitivity_points_json,
-                    metadata = EXCLUDED.metadata,
-                    updated_at = NOW(),
-                    update_count = audiograms.update_count + 1
-                """,
-                [
-                    (ag.sample_uuid, ag.start_date, ag.end_date, ag.device, ag.source_name,
-                     dump_json([resolve_audiogram_point(pt) for pt in ag.sensitivity_points]),
-                     dump_json(ag.metadata))
-                    for ag in payload.audiograms
-                ],
-            )
-
-        if payload.state_of_mind:
-            cur.executemany(
-                """
-                INSERT INTO state_of_mind_records
-                    (sample_uuid, start_date, end_date, device, source_name,
-                     kind, valence, valence_classification,
-                     labels_json, associations_json, metadata)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (sample_uuid) DO UPDATE SET
-                    start_date = EXCLUDED.start_date,
-                    end_date = EXCLUDED.end_date,
-                    device = EXCLUDED.device,
-                    source_name = EXCLUDED.source_name,
-                    kind = EXCLUDED.kind,
-                    valence = EXCLUDED.valence,
-                    valence_classification = EXCLUDED.valence_classification,
-                    labels_json = EXCLUDED.labels_json,
-                    associations_json = EXCLUDED.associations_json,
-                    metadata = EXCLUDED.metadata,
-                    updated_at = NOW(),
-                    update_count = state_of_mind_records.update_count + 1
-                """,
-                [
-                    (s.sample_uuid, s.start_date, s.end_date, s.device, s.source_name,
-                     resolve_code(HK_STATE_OF_MIND_KIND, s.kind_code),
-                     s.valence,
-                     resolve_code(HK_VALENCE_CLASSIFICATION, s.valence_classification_code),
-                     dump_json(resolve_codes(HK_STATE_OF_MIND_LABEL, s.label_codes)),
-                     dump_json(resolve_codes(HK_STATE_OF_MIND_ASSOCIATION, s.association_codes)),
-                     dump_json(s.metadata))
-                    for s in payload.state_of_mind
-                ],
-            )
-
-        if payload.correlations:
-            cur.executemany(
-                """
-                INSERT INTO correlations
-                    (sample_uuid, correlation_type, start_date, end_date, device, source_name, objects_json, metadata)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (sample_uuid) DO UPDATE SET
-                    correlation_type = EXCLUDED.correlation_type,
-                    start_date = EXCLUDED.start_date,
-                    end_date = EXCLUDED.end_date,
-                    device = EXCLUDED.device,
-                    source_name = EXCLUDED.source_name,
-                    objects_json = EXCLUDED.objects_json,
-                    metadata = EXCLUDED.metadata,
-                    updated_at = NOW(),
-                    update_count = correlations.update_count + 1
-                """,
-                [
-                    (c.sample_uuid, c.correlation_type, c.start_date, c.end_date,
-                     c.device, c.source_name,
-                     dump_json([model_to_dict(obj) for obj in c.objects]),
-                     dump_json(c.metadata))
-                    for c in payload.correlations
-                ],
-            )
-
+    logger.info("INGEST OK: %s items accepted as %s events in %.2fs", total, accepted, elapsed)
+    response: dict[str, Any] = {"status": "ok", "inserted": counts}
+    if flush_result:
+        response["flush"] = flush_result
+    return response
 
 
 @app.post("/register", dependencies=[Depends(verify_api_key)])
 def register_user(payload: RegisterPayload):
     """Register or update the user profile with HealthKit characteristics."""
-    with get_db() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            INSERT INTO users (id, name, date_of_birth, biological_sex, blood_type,
-                               fitzpatrick_skin_type, wheelchair_use, activity_move_mode)
-            VALUES (1, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (id) DO UPDATE SET
-                name = EXCLUDED.name,
-                date_of_birth = EXCLUDED.date_of_birth,
-                biological_sex = EXCLUDED.biological_sex,
-                blood_type = EXCLUDED.blood_type,
-                fitzpatrick_skin_type = EXCLUDED.fitzpatrick_skin_type,
-                wheelchair_use = EXCLUDED.wheelchair_use,
-                activity_move_mode = EXCLUDED.activity_move_mode,
-                updated_at = NOW()
-            """,
-            (payload.name,
-             payload.date_of_birth,
-             resolve_code(HK_BIOLOGICAL_SEX, payload.biological_sex_code),
-             resolve_code(HK_BLOOD_TYPE, payload.blood_type_code),
-             resolve_code(HK_FITZPATRICK_SKIN_TYPE, payload.fitzpatrick_skin_type_code),
-             resolve_code(HK_WHEELCHAIR_USE, payload.wheelchair_use_code),
-             resolve_code(HK_ACTIVITY_MOVE_MODE, payload.activity_move_mode_code)),
-        )
-        conn.commit()
-    logger.info(f"REGISTER: user '{payload.name}'")
+    storage.store_user_profile(payload)
+    logger.info("REGISTER: user '%s'", payload.name)
     return {"status": "ok"}
 
 
@@ -835,40 +1179,6 @@ def health():
     return {"status": "ok", "time": datetime.utcnow().isoformat()}
 
 
-INFO_TABLES = [
-    "health_records",
-    "workouts",
-    "electrocardiograms",
-    "workout_routes",
-    "heartbeat_series",
-    "audiograms",
-    "state_of_mind_records",
-]
-
-
 @app.get("/info", dependencies=[Depends(verify_api_key)])
 def info():
-    tables: dict[str, int] = {}
-    total_items = 0
-    last_ingest_at: Optional[datetime] = None
-
-    with get_db() as conn:
-        cur = conn.cursor()
-
-        for table_name in INFO_TABLES:
-            cur.execute(f"SELECT COUNT(*), MAX(received_at) FROM {table_name}")
-            row_count, latest_received_at = cur.fetchone()
-
-            row_count = int(row_count or 0)
-            tables[table_name] = row_count
-            total_items += row_count
-
-            if latest_received_at and (last_ingest_at is None or latest_received_at > last_ingest_at):
-                last_ingest_at = latest_received_at
-
-    return {
-        "server_time": datetime.now(timezone.utc).isoformat(),
-        "last_ingest_at": last_ingest_at.isoformat() if last_ingest_at else None,
-        "total_items": total_items,
-        "tables": tables,
-    }
+    return storage.info()
